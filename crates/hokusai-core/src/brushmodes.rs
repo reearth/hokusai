@@ -120,6 +120,11 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
             }
 
             let tile = surface.tile_request_start(tx, ty);
+            let paint_mode = dab.paint.clamp(0.0, 1.0);
+            // Pass 1: regular Normal+Eraser blend, with opacity scaled
+            // down by the paint factor. libmypaint draws both passes
+            // back-to-back with `(1 - paint) * opaque` and `paint *
+            // opaque` respectively, then sums them via the buffer.
             let touched = paint_into_tile(
                 tile,
                 ox,
@@ -135,7 +140,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 sn,
                 inv_r2,
                 hardness,
-                opaque_f,
+                opaque_f * (1.0 - paint_mode),
                 alpha_eraser_f,
                 aa_band,
                 dab.lock_alpha.clamp(0.0, 1.0),
@@ -147,8 +152,33 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 src_g,
                 src_b,
             );
+            // Pass 2: spectral pigment blend on top of the Normal pass.
+            let touched_paint = if paint_mode > 0.0 {
+                paint_blend_into_tile(
+                    tile,
+                    ox,
+                    oy,
+                    lx0,
+                    ly0,
+                    lx1,
+                    ly1,
+                    dab.x,
+                    dab.y,
+                    aspect,
+                    cs,
+                    sn,
+                    inv_r2,
+                    hardness,
+                    opaque_f * paint_mode,
+                    alpha_eraser_f,
+                    aa_band,
+                    src,
+                )
+            } else {
+                false
+            };
             surface.tile_request_end(tx, ty);
-            painted |= touched;
+            painted |= touched | touched_paint;
         }
     }
     painted
@@ -314,6 +344,124 @@ fn posterize_pixel(pixel: &mut [u16; 4], pnum: f32, amount: u32) {
         let new_premul = (blended * a).clamp(0.0, 1.0);
         pixel[ch] = (new_premul * FIX15_ONE as f32) as u16;
     }
+}
+
+/// Spectral pigment blend over an already-blended Normal pass, mirroring
+/// libmypaint's `draw_dab_pixels_BlendMode_Normal_and_Eraser_Paint`. Mixes
+/// the source color with each pixel's reflectance in 10-channel spectral
+/// space via a weighted geometric mean, then fades smoothly to plain
+/// additive blending at low canvas alpha (where spectral mixing produces
+/// dark fringes around antialiased edges).
+#[allow(clippy::too_many_arguments)]
+fn paint_blend_into_tile(
+    tile: &mut TilePixels,
+    ox: i32,
+    oy: i32,
+    lx0: usize,
+    ly0: usize,
+    lx1: usize,
+    ly1: usize,
+    cx: f32,
+    cy: f32,
+    aspect: f32,
+    cs: f32,
+    sn: f32,
+    inv_r2: f32,
+    hardness: f32,
+    opaque: f32,
+    alpha_eraser: f32,
+    aa_band: f32,
+    src_color: RgbaF32,
+) -> bool {
+    use crate::spectral::{rgb_to_spectral, spectral_blend_factor, spectral_to_rgb};
+
+    // libmypaint enforces a minimum opacity for spectral blend because
+    // very low-opacity dabs hit float→fix15 rounding errors that look
+    // worse than the additive fallback.
+    let opaque = opaque.max(150.0 / FIX15_ONE as f32);
+    let alpha_eraser = alpha_eraser.clamp(0.0, 1.0);
+    let src = clamp_color(src_color);
+    let spec_a = rgb_to_spectral(src.r, src.g, src.b);
+
+    let mut painted = false;
+    let aa_edge = 1.0 + aa_band;
+    for ly in ly0..=ly1 {
+        let py = (oy + ly as i32) as f32;
+        for lx in lx0..=lx1 {
+            let px = (ox + lx as i32) as f32;
+            let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
+            if rr >= aa_edge {
+                continue;
+            }
+            let mut opa = if aa_band > 0.0 {
+                opa_at(rr / aa_edge, hardness)
+            } else if rr <= 1.0 {
+                opa_at(rr, hardness)
+            } else {
+                0.0
+            };
+            opa *= opaque;
+            if opa <= 0.0 {
+                continue;
+            }
+
+            let opa_a = (opa * alpha_eraser).clamp(0.0, 1.0);
+            let opa_top = opa.clamp(0.0, 1.0);
+            let opa_b = 1.0 - opa_top;
+
+            let dst = &mut tile[ly][lx];
+            let dr = dst[0] as f32 / FIX15_ONE as f32;
+            let dg = dst[1] as f32 / FIX15_ONE as f32;
+            let db = dst[2] as f32 / FIX15_ONE as f32;
+            let da = dst[3] as f32 / FIX15_ONE as f32;
+
+            let opa_out = opa_a + opa_b * da;
+            let spectral_factor = spectral_blend_factor(da).clamp(0.0, 1.0);
+            let additive_factor = 1.0 - spectral_factor;
+
+            // Additive contribution — same shape as the Normal pass, but
+            // computed in float here so the spectral mix can be lerped
+            // against it.
+            let add_r = opa_a * src.r + opa_b * dr;
+            let add_g = opa_a * src.g + opa_b * dg;
+            let add_b = opa_a * src.b + opa_b * db;
+
+            let (mut new_r, mut new_g, mut new_b) = (add_r, add_g, add_b);
+
+            if spectral_factor > 0.0 && da > 0.0 {
+                // Un-premultiply for the spectral upsample. libmypaint
+                // does the same — straight-alpha reflectance is what the
+                // spectral tables expect.
+                let inv_da = 1.0 / da;
+                let bot_r = (dr * inv_da).clamp(0.0, 1.0);
+                let bot_g = (dg * inv_da).clamp(0.0, 1.0);
+                let bot_b = (db * inv_da).clamp(0.0, 1.0);
+                let spec_b = rgb_to_spectral(bot_r, bot_g, bot_b);
+
+                let mut fac_a = opa_top / (opa_top + opa_b * da).max(1e-6);
+                fac_a *= alpha_eraser;
+                let fac_b = 1.0 - fac_a;
+
+                let mut mix = [0.0_f32; 10];
+                for i in 0..10 {
+                    mix[i] = spec_a[i].max(1e-6).powf(fac_a)
+                        * spec_b[i].max(1e-6).powf(fac_b);
+                }
+                let (sr, sg, sb) = spectral_to_rgb(&mix);
+
+                new_r = additive_factor * add_r + spectral_factor * sr * opa_out;
+                new_g = additive_factor * add_g + spectral_factor * sg * opa_out;
+                new_b = additive_factor * add_b + spectral_factor * sb * opa_out;
+            }
+
+            dst[0] = (new_r.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+            dst[1] = (new_g.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+            dst[2] = (new_b.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+            dst[3] = (opa_out.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+            painted = true;
+        }
+    }
+    painted
 }
 
 /// `(dst * inv_mask + src_premul_channel * opa_alpha) >> 15` with libmypaint's

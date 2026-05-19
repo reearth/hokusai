@@ -92,7 +92,7 @@ define_settings! {
     Posterize                    => "posterize",
     PosterizeNum                 => "posterize_num",
     // Newer mypaint additions (kept for round-trip compatibility):
-    Paint                        => "paint",
+    Paint                        => "paint_mode",
     SmudgeTransparency           => "smudge_transparency",
     OffsetY                      => "offset_y",
     OffsetX                      => "offset_x",

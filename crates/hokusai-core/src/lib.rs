@@ -17,6 +17,7 @@ pub mod input;
 pub mod mapping;
 pub mod rng;
 pub mod setting;
+pub mod spectral;
 pub mod state;
 pub mod stroke;
 pub mod surface;
