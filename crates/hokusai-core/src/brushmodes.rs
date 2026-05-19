@@ -56,6 +56,93 @@ fn rr_at(px: f32, py: f32, x: f32, y: f32, aspect: f32, cs: f32, sn: f32, inv_r2
     (yyr * yyr + xxr * xxr) * inv_r2
 }
 
+/// libmypaint's `calculate_r_sample` — squared elliptical distance from
+/// the dab centre (in pixel-relative coordinates, not normalised).
+#[inline]
+fn r_sample(x: f32, y: f32, aspect: f32, sn: f32, cs: f32) -> f32 {
+    let yyr = (y * cs - x * sn) * aspect;
+    let xxr = y * sn + x * cs;
+    yyr * yyr + xxr * xxr
+}
+
+/// libmypaint's `sign_point_in_line`.
+#[inline]
+fn sign_point_in_line(px: f32, py: f32, vx: f32, vy: f32) -> f32 {
+    (px - vx) * (-vy) - vx * (py - vy)
+}
+
+/// libmypaint's `closest_point_to_line` — orthogonal projection onto
+/// the line through the origin spanned by `(lx, ly)`.
+#[inline]
+fn closest_point_to_line(lx: f32, ly: f32, px: f32, py: f32) -> (f32, f32) {
+    let l2 = lx * lx + ly * ly;
+    let dot = px * lx + py * ly;
+    let t = dot / l2;
+    (lx * t, ly * t)
+}
+
+/// libmypaint's `calculate_rr_antialiased`. Returns an AA-corrected
+/// squared normalised distance for sub-pixel edge fading. Used for
+/// dabs with `radius < 3` where the plain `rr_at` value would alias
+/// hard at the dab boundary.
+#[inline]
+fn rr_at_aa(
+    px: f32,
+    py: f32,
+    x: f32,
+    y: f32,
+    aspect: f32,
+    cs: f32,
+    sn: f32,
+    inv_r2: f32,
+    r_aa_start: f32,
+) -> f32 {
+    let pixel_right = x - px;
+    let pixel_bottom = y - py;
+    let pixel_center_x = pixel_right - 0.5;
+    let pixel_center_y = pixel_bottom - 0.5;
+    let pixel_left = pixel_right - 1.0;
+    let pixel_top = pixel_bottom - 1.0;
+
+    let (nearest_x, nearest_y, rr_near);
+    if pixel_left < 0.0 && pixel_right > 0.0 && pixel_top < 0.0 && pixel_bottom > 0.0 {
+        nearest_x = 0.0;
+        nearest_y = 0.0;
+        rr_near = 0.0;
+    } else {
+        let (nx, ny) = closest_point_to_line(cs, sn, pixel_center_x, pixel_center_y);
+        nearest_x = nx.clamp(pixel_left, pixel_right);
+        nearest_y = ny.clamp(pixel_top, pixel_bottom);
+        let r_near = r_sample(nearest_x, nearest_y, aspect, sn, cs);
+        rr_near = r_near * inv_r2;
+    }
+
+    if rr_near > 1.0 {
+        return rr_near;
+    }
+
+    let center_sign = sign_point_in_line(pixel_center_x, pixel_center_y, cs, -sn);
+    let rad_area_1 = (1.0_f32 / core::f32::consts::PI).sqrt();
+    let (farthest_x, farthest_y) = if center_sign < 0.0 {
+        (nearest_x - sn * rad_area_1, nearest_y + cs * rad_area_1)
+    } else {
+        (nearest_x + sn * rad_area_1, nearest_y - cs * rad_area_1)
+    };
+
+    let r_far = r_sample(farthest_x, farthest_y, aspect, sn, cs);
+    let rr_far = r_far * inv_r2;
+
+    if r_far < r_aa_start {
+        return (rr_far + rr_near) * 0.5;
+    }
+
+    let visibility_near = 1.0 - rr_near;
+    let delta = rr_far - rr_near;
+    let delta2 = 1.0 + delta;
+    let visibility_near_norm = visibility_near / delta2;
+    1.0 - visibility_near_norm
+}
+
 /// Render `dab` into `surface`. Returns whether any pixel was modified.
 ///
 /// This is the function `TiledSurface::draw_dab` defaults to.
@@ -74,11 +161,28 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let cs = angle.cos();
     let sn = angle.sin();
     let inv_r2 = 1.0 / (radius * radius);
-    // Anti-aliasing band in rr-space (rr is r² normalized). The setting
-    // is in *pixels of feather along the major axis*; libmypaint brushes
-    // commonly use 1–4 px here, so we don't clamp the input. With aa=1
-    // the feather is ~1 px wide at radius=1.
-    let aa_band = (dab.anti_aliasing.max(0.0) * 2.0) / radius;
+    // libmypaint's render_dab_mask uses per-pixel sub-pixel sampling
+    // (calculate_rr_antialiased) for `radius < 3`. Larger dabs fall back
+    // to the plain rr formula since aliasing is invisible. Pre-compute
+    // `r_aa_start` here so the render functions can branch on a single
+    // scalar instead of re-deriving it per pixel.
+    let r_aa_start = if radius < 3.0 {
+        let aa_border = 1.0_f32;
+        let start = if radius > aa_border {
+            radius - aa_border
+        } else {
+            0.0
+        };
+        start * start / aspect
+    } else {
+        -1.0
+    };
+    // anti_aliasing was baked into the (radius, hardness) pair earlier
+    // in stroke.rs::build_dab — same trick libmypaint uses in
+    // prepare_and_draw_dab. dab.anti_aliasing is unused on the render
+    // side; the per-pixel sub-pixel sampling for small dabs is driven by
+    // the libmypaint-correct `r_aa_start` path computed above.
+    let _ = dab.anti_aliasing;
 
     // Conservative AABB: enlarge by aspect_ratio so the rotated ellipse fits.
     let r_ext = radius * aspect + 1.0;
@@ -142,7 +246,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 hardness,
                 opaque_f * (1.0 - paint_mode),
                 alpha_eraser_f,
-                aa_band,
+                r_aa_start,
                 dab.lock_alpha.clamp(0.0, 1.0),
                 dab.posterize.clamp(0.0, 1.0),
                 dab.posterize_num.max(1.0),
@@ -171,7 +275,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                     hardness,
                     opaque_f * paint_mode,
                     alpha_eraser_f,
-                    aa_band,
+                    r_aa_start,
                     src,
                 )
             } else {
@@ -199,7 +303,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                     inv_r2,
                     hardness,
                     opaque_f,
-                    aa_band,
+                    r_aa_start,
                     dab.posterize.clamp(0.0, 1.0),
                     dab.posterize_num.max(1.0),
                 )
@@ -231,7 +335,7 @@ fn paint_into_tile(
     hardness: f32,
     opaque: f32,
     alpha_eraser: f32,
-    aa_band: f32,
+    r_aa_start: f32,
     lock_alpha: f32,
     posterize: f32,
     posterize_num: f32,
@@ -242,29 +346,26 @@ fn paint_into_tile(
     src_b: u32,
 ) -> bool {
     let mut painted = false;
-    let aa_edge = 1.0 + aa_band;
     let _ = (posterize, posterize_num); // handled by posterize_pass_into_tile.
 
     for ly in ly0..=ly1 {
         let py = (oy + ly as i32) as f32;
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
-            let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
-            if rr >= aa_edge {
+            // libmypaint picks sub-pixel AA for dabs whose radius is
+            // below 3 px; for larger dabs the plain rr formula doesn't
+            // alias visibly.
+            let rr = if r_aa_start >= 0.0 {
+                rr_at_aa(
+                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
+                )
+            } else {
+                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
+            };
+            if rr > 1.0 {
                 continue;
             }
-            // With anti_aliasing > 0, stretch the hardness falloff outward
-            // so the dab extends to rr = aa_edge with a smooth fade rather
-            // than a hard cut-off at rr = 1. This is what bridges thin
-            // elliptical brushes (calligraphy's 5:1 aspect with aa=3.53)
-            // into a connected stroke instead of separate slashes.
-            let mut opa = if aa_band > 0.0 {
-                opa_at(rr / aa_edge, hardness)
-            } else if rr <= 1.0 {
-                opa_at(rr, hardness)
-            } else {
-                0.0
-            };
+            let mut opa = opa_at(rr, hardness);
             opa *= opaque;
             if opa <= 0.0 {
                 continue;
@@ -394,7 +495,7 @@ fn paint_blend_into_tile(
     hardness: f32,
     opaque: f32,
     alpha_eraser: f32,
-    aa_band: f32,
+    r_aa_start: f32,
     src_color: RgbaF32,
 ) -> bool {
     use crate::spectral::{rgb_to_spectral, spectral_blend_factor, spectral_to_rgb};
@@ -408,22 +509,21 @@ fn paint_blend_into_tile(
     let spec_a = rgb_to_spectral(src.r, src.g, src.b);
 
     let mut painted = false;
-    let aa_edge = 1.0 + aa_band;
     for ly in ly0..=ly1 {
         let py = (oy + ly as i32) as f32;
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
-            let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
-            if rr >= aa_edge {
+            let rr = if r_aa_start >= 0.0 {
+                rr_at_aa(
+                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
+                )
+            } else {
+                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
+            };
+            if rr > 1.0 {
                 continue;
             }
-            let mut opa = if aa_band > 0.0 {
-                opa_at(rr / aa_edge, hardness)
-            } else if rr <= 1.0 {
-                opa_at(rr, hardness)
-            } else {
-                0.0
-            };
+            let mut opa = opa_at(rr, hardness);
             opa *= opaque;
             if opa <= 0.0 {
                 continue;
@@ -509,25 +609,28 @@ fn posterize_pass_into_tile(
     inv_r2: f32,
     hardness: f32,
     opaque: f32,
-    aa_band: f32,
+    r_aa_start: f32,
     posterize: f32,
     posterize_num: f32,
 ) -> bool {
     let mut painted = false;
-    let aa_edge = 1.0 + aa_band;
     let pnum = posterize_num.round().max(1.0);
     let post_amount_fix15 = (posterize.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
     for ly in ly0..=ly1 {
         let py = (oy + ly as i32) as f32;
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
-            let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
-            if rr >= aa_edge {
+            let rr = if r_aa_start >= 0.0 {
+                rr_at_aa(
+                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
+                )
+            } else {
+                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
+            };
+            if rr > 1.0 {
                 continue;
             }
-            let mut opa = if aa_band > 0.0 {
-                opa_at(rr / aa_edge, hardness)
-            } else if rr <= 1.0 {
+            let mut opa = if rr <= 1.0 {
                 opa_at(rr, hardness)
             } else {
                 0.0
