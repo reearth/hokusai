@@ -41,6 +41,10 @@ impl TiledSurface for MemSurface {
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
 
+    fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
+        self.tiles.get(&(tx, ty)).map(|b| &**b)
+    }
+
     fn begin_atomic(&mut self) {
         self.in_atomic = true;
         self.dirty.clear();

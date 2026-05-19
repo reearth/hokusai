@@ -9,6 +9,7 @@
 //! Surface backends and `.myb` JSON parsing live in sibling crates.
 
 pub mod brush;
+pub mod brushmodes;
 pub mod color;
 pub mod evaluator;
 pub mod fix15;

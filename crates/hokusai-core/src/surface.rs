@@ -36,15 +36,22 @@ pub trait TiledSurface {
     }
 
     /// Render one dab. Returns whether any pixel was modified.
-    /// Default impl will be provided in M3 (port of libmypaint's `brushmodes.c`).
-    fn draw_dab(&mut self, _dab: &Dab) -> bool {
-        // TODO(M3): port draw_dab_pixels_BlendMode_Normal_and_Eraser + variants.
-        false
+    ///
+    /// Default impl is libmypaint's Normal+Eraser blend in linear sRGB fix15.
+    /// Other modes (colorize, posterize, lock_alpha, spectral) are TODO.
+    fn draw_dab(&mut self, dab: &Dab) -> bool {
+        crate::brushmodes::draw_dab_default(self, dab)
+    }
+
+    /// Read-only tile lookup, used by the default `get_color` and by any
+    /// caller that wants to inspect the canvas without dirtying tiles.
+    fn tile_lookup(&self, _tx: i32, _ty: i32) -> Option<&TilePixels> {
+        None
     }
 
     /// Average color within `radius` of `(x, y)`. Used by smudge / color picker.
-    fn get_color(&self, _x: f32, _y: f32, _radius: f32) -> RgbaF32 {
-        // TODO(M3): port get_color_pixels_accumulate.
-        RgbaF32::TRANSPARENT
+    /// Backends that don't implement `tile_lookup` will get transparent.
+    fn get_color(&self, x: f32, y: f32, radius: f32) -> RgbaF32 {
+        crate::brushmodes::get_color_default(self, x, y, radius)
     }
 }
