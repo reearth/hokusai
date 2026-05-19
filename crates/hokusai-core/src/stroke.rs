@@ -365,9 +365,17 @@ impl Brush {
         let aspect = sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
         let dab_angle_rad = sv.get(BrushSetting::EllipticalDabAngle).to_radians();
 
-        let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
-        let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
+        // libmypaint reads SMUDGE / SMUDGE_LENGTH per-dab; only SMUDGE_RADIUS_LOG
+        // is treated as constant by `update_smudge_color`. Match that — the
+        // per-dab versions are pulled from `dab_sv` inside the loop.
         let smudge_radius_log = sv.get(BrushSetting::SmudgeRadiusLog);
+        // libmypaint's gate for entering `update_smudge_color` is
+        // `SMUDGE != 0 || mapping not constant`. We need to know if the
+        // mapping has any inputs so a curve-driven smudge that momentarily
+        // evaluates to 0 still gets its recentness counter decayed.
+        let smudge_setting = self.get(BrushSetting::Smudge);
+        let smudge_mapping_active =
+            smudge_setting.base_value != 0.0 || !smudge_setting.inputs.is_empty();
         // libmypaint's `if (offset_by_random)` consumes 2 PRNG draws on
         // ANY non-zero setting (curve-evaluated), then clamps the
         // amplitude with `MAX(0, ...)`. Hokusai used to gate the whole
@@ -713,8 +721,17 @@ impl Brush {
             // then the legacy/spectral mix into the smudge bucket. The
             // sampled colour can also gate-out the whole dab via
             // `smudge_transparency`.
+            // libmypaint evaluates SMUDGE and SMUDGE_LENGTH per-dab.
+            let smudge_amt = dab_sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
+            let smudge_length =
+                dab_sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
             let mut skip_dab = false;
-            if smudge_amt > 0.0 {
+            // libmypaint: enter update_smudge_color when
+            //   smudge_length < 1.0 && (SMUDGE != 0 || mapping not constant)
+            // — not gated on smudge_amt itself, so a curve-driven smudge
+            // that hits 0 at one dab still decays its recentness counter
+            // and stays in step with the reference.
+            if smudge_length < 1.0 && smudge_mapping_active {
                 let smudge_length_log =
                     dab_sv.get(BrushSetting::SmudgeLengthLog);
                 let mut update_factor = smudge_length.max(0.01);
