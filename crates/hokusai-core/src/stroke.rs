@@ -351,9 +351,15 @@ impl Brush {
         // ignores any input curves on these settings via `BASEVAL(...)`),
         // re-evaluating the count after each dab against the freshly
         // advanced state. Mirror that with a per-iteration loop.
-        let dpar = self.get(BrushSetting::DabsPerActualRadius).base_value.max(0.0);
-        let dpbr = self.get(BrushSetting::DabsPerBasicRadius).base_value.max(0.0);
-        let dps = self.get(BrushSetting::DabsPerSecond).base_value.max(0.0);
+        // libmypaint's state_based_dab_count uses STATE.DABS_PER_*, which
+        // are assigned SETTING(...) per-dab in update_states_and_setting_values
+        // (mypaint-brush.c:628-630). Read from the event-level SV here so
+        // brushes with curve-driven dabs_per_* (Round#1 has brush_radius on
+        // DPAR; some scatter brushes use pressure on DPS) at least see the
+        // event-time curve evaluation rather than the brush's stored base.
+        let dpar = sv.get(BrushSetting::DabsPerActualRadius).max(0.0);
+        let dpbr = sv.get(BrushSetting::DabsPerBasicRadius).max(0.0);
+        let dps = sv.get(BrushSetting::DabsPerSecond).max(0.0);
 
         // Elliptical correction: libmypaint computes `count_dabs_to`'s
         // distance via `sqrt(((dy*cs - dx*sn) * aspect)² + (dy*sn + dx*cs)²)`,
