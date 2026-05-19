@@ -159,11 +159,9 @@ impl Brush {
         } else if state.stroke_started && pressure <= stroke_threshold * 0.9 + STROKE_EPS {
             state.stroke_started = false;
         }
-        let stroke_freq = (-self
-            .get(BrushSetting::StrokeDurationLogarithmic)
-            .base_value)
-            .exp();
-        let stroke_wrap = 1.0 + self.get(BrushSetting::StrokeHoldtime).base_value.max(0.0);
+        // STROKE advance now happens per-dab using dab_sv's evaluated
+        // STROKE_DURATION_LOGARITHMIC and STROKE_HOLDTIME — see the
+        // matching block right after the per-dab `evaluate` call below.
 
         // --- Tilt-derived inputs --------------------------------------------
         // libmypaint convention (mypaint-brush.c):
@@ -531,25 +529,12 @@ impl Brush {
             state.direction_dx += (dx_for_dir - state.direction_dx) * dir_fac;
             state.direction_dy += (dy_for_dir - state.direction_dy) * dir_fac;
 
-            // Advance STATE.STROKE by this step's normalised distance.
-            // `norm_dist = |step| / base_radius`; libmypaint uses this for
-            // the distance contribution so a brush with a larger base radius
-            // takes more pixels to "fill" each unit of stroke. The wrap rule
-            // saturates at 1.0 when stroke_holdtime >= ~9.9 (a hold-forever
-            // signal), otherwise modulos `1 + stroke_holdtime` so periodic
-            // stroke-driven curves cycle.
-            let step_dist =
-                (step_dx * step_dx + step_dy * step_dy).sqrt() / base_radius.max(1e-3);
-            let mut stroke_advance = (state.stroke_state + step_dist * stroke_freq).max(0.0);
-            if stroke_advance >= stroke_wrap {
-                if stroke_wrap > 10.9 {
-                    stroke_advance = 1.0;
-                } else {
-                    stroke_advance %= stroke_wrap;
-                }
-            }
-            state.stroke_state = stroke_advance;
-
+            // libmypaint's update_states_and_setting_values evaluates ALL
+            // settings using the PRE-advance STROKE, and only advances
+            // STATE.STROKE afterwards using the freshly-evaluated
+            // SETTING(STROKE_DURATION_LOGARITHMIC). Mirror that: feed the
+            // current state.stroke_state into dab_inputs, evaluate dab_sv,
+            // then advance below using dab_sv's per-dab values.
             dab_inputs.set(BrushInput::Pressure, cur_pressure);
             dab_inputs.set(BrushInput::Stroke, state.stroke_state.min(1.0));
             // AttackAngle is event-level (depends on raw direction, not the
@@ -638,6 +623,32 @@ impl Brush {
             let dab_sv = evaluate(self, &dab_inputs);
             let dab_radius = dab_sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
             state.actual_radius = dab_radius;
+
+            // Advance STATE.STROKE by this step's normalised distance,
+            // using the per-dab evaluated stroke_duration / stroke_holdtime
+            // (libmypaint reads them as SETTING, not BASEVAL). The wrap rule
+            // saturates at 1.0 when stroke_holdtime >= ~9.9 (a hold-forever
+            // signal), otherwise modulos `1 + stroke_holdtime` so periodic
+            // stroke-driven curves cycle.
+            {
+                let stroke_freq = (-dab_sv
+                    .get(BrushSetting::StrokeDurationLogarithmic))
+                    .exp();
+                let stroke_wrap = 1.0
+                    + dab_sv.get(BrushSetting::StrokeHoldtime).max(0.0);
+                let step_dist = (step_dx * step_dx + step_dy * step_dy).sqrt()
+                    / base_radius.max(1e-3);
+                let mut stroke_advance =
+                    (state.stroke_state + step_dist * stroke_freq).max(0.0);
+                if stroke_advance >= stroke_wrap {
+                    if stroke_wrap > 10.9 {
+                        stroke_advance = 1.0;
+                    } else {
+                        stroke_advance %= stroke_wrap;
+                    }
+                }
+                state.stroke_state = stroke_advance;
+            }
 
             // Refresh STATE.CUSTOM_INPUT toward the freshly evaluated
             // SETTING(custom_input). libmypaint uses a fixed `0.1`
