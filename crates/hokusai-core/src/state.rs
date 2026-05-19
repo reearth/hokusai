@@ -51,6 +51,13 @@ pub struct BrushState {
     /// keep the trailing catch-up dabs at the same ink density the user was
     /// drawing with, rather than painting nothing at pressure=0.
     pub last_pressure: f32,
+    /// Cached `INPUT(RANDOM)` value, mirroring libmypaint's
+    /// `self->random_input`. libmypaint feeds the current value into
+    /// every dab's setting evaluation and refreshes it from the PRNG
+    /// *after* the dab is drawn, so consecutive dabs see distinct
+    /// random samples without forcing the caller to re-read `next_unit`
+    /// per setting query.
+    pub random_input: f32,
 
     /// `false` until the first `stroke_to` has been processed. While `false`,
     /// `stroke_to` only seeds the position; no dabs are emitted. Mirrors
@@ -86,6 +93,7 @@ impl BrushState {
             smudge_a: 0.0,
             rng: BrushRng::new(seed),
             last_pressure: 0.0,
+            random_input: 0.0,
             started: false,
         }
     }
@@ -103,6 +111,8 @@ impl BrushState {
 
 impl Default for BrushState {
     fn default() -> Self {
-        Self::new(0xC0FFEE)
+        // libmypaint seeds its per-brush PRNG with `1000`; matching it here
+        // is necessary for byte-exact parity with the upstream goldens.
+        Self::new(1000)
     }
 }

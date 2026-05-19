@@ -55,6 +55,12 @@ impl Brush {
 
         // --- Fresh stroke: seed state, no dabs ------------------------------
         if !state.started || dtime >= 5.0 {
+            // libmypaint sets `self->random_input = rng_double_next()` inside
+            // its `dtime > max_dtime || reset_requested` branch, before
+            // returning without drawing. Mirror that so the first real event
+            // after the warm-up sees the same `INPUT(RANDOM)` value as
+            // libmypaint does.
+            state.random_input = state.rng.next_unit();
             state.last_event_x = x;
             state.last_event_y = y;
             state.last_event_time += dtime;
@@ -158,7 +164,11 @@ impl Brush {
         inputs.set(BrushInput::Pressure, pressure);
         inputs.set(BrushInput::Speed1, speed1_input);
         inputs.set(BrushInput::Speed2, speed2_input);
-        inputs.set(BrushInput::Random, state.rng.next_unit());
+        // libmypaint's `INPUT(RANDOM)` comes from `self->random_input`, which
+        // is consumed per-dab (refreshed after each draw) rather than per
+        // event. Use the cached value at the event level too — the loop
+        // below overrides it per dab to match.
+        inputs.set(BrushInput::Random, state.random_input);
         inputs.set(BrushInput::Stroke, stroke_progress);
         inputs.set(BrushInput::Attack, stroke_progress);
         inputs.set(BrushInput::Direction, direction_input(dx_raw, dy_raw));
@@ -308,6 +318,11 @@ impl Brush {
                 let dab_pressure =
                     entry_pressure + (pressure - entry_pressure) * frac.clamp(0.0, 1.0);
                 dab_inputs.set(BrushInput::Pressure, dab_pressure);
+                // libmypaint feeds the current `random_input` into the
+                // setting evaluation for this dab — see
+                // `INPUT(RANDOM) = self->random_input;` inside
+                // `update_states_and_setting_values`.
+                dab_inputs.set(BrushInput::Random, state.random_input);
                 let dab_sv = evaluate(self, &dab_inputs);
                 let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
                 state.actual_radius = dab_radius;
@@ -352,6 +367,10 @@ impl Brush {
                 }
                 state.last_dab_x = dab.x;
                 state.last_dab_y = dab.y;
+                // libmypaint refreshes `random_input` once per dab, *after*
+                // drawing — see `self->random_input = rng_double_next(...)`
+                // at the bottom of the loop in `mypaint_brush_stroke_to`.
+                state.random_input = state.rng.next_unit();
             }
             accumulated -= n as f32;
         }
