@@ -97,19 +97,21 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 ## TODO
 
 ### Stroke engine
-- [x] **Speed slowness low-pass** (`speed1_slowness`, `speed2_slowness`)
+- [x] **Speed slowness low-pass** (`speed1_slowness`, `speed2_slowness`) — `1 - exp(-step_dtime / slow)`, advanced per dab
+- [x] **`speed1_gamma` / `speed2_gamma`** mapping (`log(gamma + speed) * m + q` with libmypaint's fix-points)
 - [x] **Tilt-derived inputs** (`tilt_declination` defaults to 90°, `tilt_ascension`)
-- [x] **Per-dab pressure interpolation** within a stroke segment
+- [x] **Per-dab interpolation** of pressure / speed inside a segment
+- [x] **Per-iteration `count_dabs_to`** — re-counted after every dab against the freshly advanced state
+- [x] **`slow_tracking_per_dab`** — lags the dab centre behind the slow-tracked cursor
+- [x] **`opaque_linearize`** — compensates per-dab alpha for overlap
+- [x] **`offset_by_random`** / **`offset_by_speed`** dab position jitter (libmypaint-correct scale)
 - [ ] **`tracking_noise`** — random jitter added to the smoothed pointer position
 - [ ] **`attack`** input — initial pressure ramp at stroke start (currently aliased to `stroke_progress`)
 - [ ] **`stroke_holdtime`** + `stroke_duration_logarithmic` driving the `Stroke` input
-- [ ] **`offset_by_random`** / **`offset_by_speed`** dab position jitter
 - [ ] **`stroke_threshold`** — suppress dabs below a pressure floor
 - [ ] **Custom input** — recursive evaluation through `custom_input` / `custom_input_slowness`
-- [ ] **Slow tracking per-dab** (`slow_tracking_per_dab`) for radius smoothing
 - [ ] **Gridmap inputs** (`gridmap_x`, `gridmap_y`)
 - [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`)
-- [ ] **Per-dab interpolation of non-pressure inputs** (speed, tilt, position) — currently held constant inside a segment
 
 ### Pixel blending
 - [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
@@ -121,7 +123,6 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [x] **libmypaint-sourced golden snapshots** — `tools/libmypaint-render/` is a small C wrapper around `mypaint_brush_stroke_to`, and `cargo xtask regenerate-goldens` drives it across the fixture set so `crates/hokusai-compat/fixtures/*.png` is upstream output. `cargo xtask parity-report` renders a side-by-side HTML diff for eyeballing the parity surface
 - [x] **Knuth lagged Fibonacci PRNG** — port of libmypaint's `rng-double.c` (TAOCP 3.6-15) with the same `rand_gauss` scaling (`sum*√3 − 2√3`) and per-dab `random_input` refresh order. Seeding mirrors `rng_double_new(1000)`.
 - [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
-- [ ] Close residual MAD on `brush_pressure_ramp`, `calligraphy_*`, `charcoal_*` (≈ 1–4 vs. tolerance 0.5)
 - [ ] Compatibility tests against the full libmypaint brush pack
 
 ### Backends
