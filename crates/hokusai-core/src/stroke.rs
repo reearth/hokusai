@@ -569,9 +569,19 @@ impl Brush {
             dab_inputs.set(BrushInput::TiltAscension, asc_wrapped);
             dab_inputs.set(BrushInput::TiltDeclinationX, state.declination_x);
             dab_inputs.set(BrushInput::TiltDeclinationY, state.declination_y);
+            // libmypaint uses the SMOOTHED direction state (DIRECTION_DX/DY,
+            // dir_angle_360 = atan2(DIRECTION_DY, DIRECTION_DX)) for the
+            // attack_angle input — see mypaint-brush.c:712. Hokusai
+            // previously used raw event direction here, which diverges
+            // when direction_filter is non-zero (Posterizer drives
+            // offset_angle_2 and offset_angle_adj via this input).
             dab_inputs.set(
                 BrushInput::AttackAngle,
-                attack_angle(state.ascension, dx_raw, dy_raw),
+                attack_angle(
+                    state.ascension,
+                    state.direction_angle_dx,
+                    state.direction_angle_dy,
+                ),
             );
 
             // Custom input: feed the previous-dab smoothed value so the
