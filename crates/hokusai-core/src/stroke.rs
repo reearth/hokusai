@@ -493,8 +493,32 @@ fn build_dab(
     // setting (no base value and no input curves) as that identity.
     let opaque_raw = sv.get(BrushSetting::Opaque).clamp(0.0, 2.0);
     let opaque_mult = opaque_multiplier(brush, sv);
-    let opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
-    // TODO: opaque_linearize as a gamma-style adjustment on the result.
+    let mut opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
+
+    // libmypaint's `opaque_linearize` compensates for the fact that
+    // overlapping dabs accumulate alpha non-linearly: the per-dab alpha
+    // is rooted by `1/dabs_per_pixel` so the *aggregate* opacity at the
+    // dab center matches `opaque`. Brushes like the stock round brush
+    // (`opaque_linearize=0.44`) rely on this to dim their feathered edges
+    // without going full opaque — without it, hokusai's tails of a
+    // pressure ramp keep painting at the unmodulated `opaque` value while
+    // libmypaint's drop to near zero.
+    let opaque_linearize = brush
+        .get(BrushSetting::OpaqueLinearize)
+        .base_value
+        .max(0.0);
+    if opaque_linearize > 0.0 && opaque > 0.0 {
+        let dpar = brush.get(BrushSetting::DabsPerActualRadius).base_value;
+        let dpbr = brush.get(BrushSetting::DabsPerBasicRadius).base_value;
+        let mut dabs_per_pixel = (dpar + dpbr) * 2.0;
+        if dabs_per_pixel < 1.0 {
+            dabs_per_pixel = 1.0;
+        }
+        dabs_per_pixel = 1.0 + opaque_linearize * (dabs_per_pixel - 1.0);
+        let beta = 1.0 - opaque;
+        let beta_dab = beta.powf(1.0 / dabs_per_pixel);
+        opaque = (1.0 - beta_dab).clamp(0.0, 1.0);
+    }
 
     let mut hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
     let mut radius = state.actual_radius;
