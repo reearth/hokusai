@@ -657,6 +657,30 @@ impl Brush {
                 px += state.rng.next_gauss() * off_random * base_radius;
                 py += state.rng.next_gauss() * off_random * base_radius;
             }
+            // libmypaint's `radius_by_random`: gaussian-jitter
+            // `radius_logarithmic` by `noise * setting`, clamp the result
+            // into `[ACTUAL_RADIUS_MIN, ACTUAL_RADIUS_MAX]`, and scale
+            // opaque by `(orig_radius / new_radius)²` when the new radius
+            // is bigger so the perceived ink density stays even. Consumes
+            // one PRNG draw — placed *after* `offset_by_random` to keep
+            // the consumption order aligned with `prepare_and_draw_dab`.
+            let mut dab_opaque_scale = 1.0_f32;
+            let rad_random = dab_sv.get(BrushSetting::RadiusByRandom).max(0.0);
+            if rad_random > 1e-3 {
+                let noise = state.rng.next_gauss() * rad_random;
+                let new_log = dab_sv.get(BrushSetting::Radius) + noise;
+                let new_radius = new_log.exp().clamp(0.2, 1000.0);
+                let alpha_correction = (dab_radius / new_radius).powi(2);
+                if alpha_correction <= 1.0 {
+                    dab_opaque_scale = alpha_correction;
+                }
+                // libmypaint stores the perturbed radius back into
+                // STATE.ACTUAL_RADIUS so the next `count_dabs_to` call sees
+                // it. `build_dab` reads from `state.actual_radius` for the
+                // dab geometry, so updating it here is what feeds the new
+                // size through to the renderer.
+                state.actual_radius = new_radius;
+            }
             if off_speed != 0.0 {
                 // libmypaint: `x += NORM_DX_SLOW * offset_by_speed * 0.1 /
                 // viewzoom`. Viewzoom is 1.0 here. The previous hokusai
@@ -711,7 +735,7 @@ impl Brush {
 
             drift_color(state, &dab_sv, step_dtime);
 
-            let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt);
+            let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt, dab_opaque_scale);
             if surface.draw_dab(&dab) {
                 painted = true;
             }
@@ -866,6 +890,10 @@ fn build_dab(
     px: f32,
     py: f32,
     smudge_amt: f32,
+    // Per-dab opacity scaler from `radius_by_random`: when the noise
+    // produced a larger radius, libmypaint scales `opaque` by
+    // `(orig_radius / new_radius)²` to keep ink density even.
+    opaque_scale: f32,
 ) -> Dab {
     // Base color from the (drifted) HSV state.
     let base = hsv_to_rgb(Hsv {
@@ -936,7 +964,7 @@ fn build_dab(
     // setting (no base value and no input curves) as that identity.
     let opaque_raw = sv.get(BrushSetting::Opaque).clamp(0.0, 2.0);
     let opaque_mult = opaque_multiplier(brush, sv);
-    let mut opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
+    let mut opaque = (opaque_raw * opaque_mult * opaque_scale).clamp(0.0, 1.0);
 
     // libmypaint's `opaque_linearize` compensates for the fact that
     // overlapping dabs accumulate alpha non-linearly: the per-dab alpha
