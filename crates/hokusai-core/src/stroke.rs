@@ -130,10 +130,16 @@ impl Brush {
         state.actual_radius = radius;
 
         // --- Slow tracking: advance smoothed position toward the event ------
-        // libmypaint multiplies the lag factor by dtime so it stabilises at
-        // 60 Hz regardless of event rate.
-        let slow = sv.get(BrushSetting::SlowTracking).clamp(0.0, 1.0);
-        let approach = (1.0 - slow).powf((dt * 60.0).max(1e-3));
+        // libmypaint's `slow_tracking` is an exponential time constant in
+        // frames at 60 Hz, *not* a [0, 1] coefficient. Real brushes set it
+        // well above 1 (brush.myb uses 4.47), so clamping to 1 froze them.
+        // Formula: fac = exp(-dt * 60 / slow), approach = 1 - fac.
+        let slow = sv.get(BrushSetting::SlowTracking).max(0.0);
+        let approach = if slow > 1e-3 {
+            1.0 - (-dt * 60.0 / slow).exp()
+        } else {
+            1.0
+        };
         let prev_actual_x = state.actual_x;
         let prev_actual_y = state.actual_y;
         let mut new_actual_x = prev_actual_x + (x - prev_actual_x) * approach;
