@@ -253,13 +253,226 @@ fn compute_mad(a: &std::path::Path, b: &std::path::Path) -> Option<f32> {
     Some(sum as f32 / ia.len() as f32)
 }
 
+/// Walk an entire libmypaint brush pack, drive each brush through a
+/// fixed sample stroke with both libmypaint and hokusai, and report the
+/// per-brush MAD as a sortable Markdown table written to
+/// `tmp/brush-pack-report.md`. The brush pack defaults to
+/// `tmp/mypaint-brushes/` (clone of <https://github.com/mypaint/mypaint-brushes>);
+/// override via the `HOKUSAI_BRUSH_PACK` env var.
+fn cmd_brush_pack_report() {
+    use std::fmt::Write;
+
+    let root = workspace_root();
+    let wrapper = ensure_wrapper(&root);
+    let pack = std::env::var("HOKUSAI_BRUSH_PACK")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| root.join("tmp/mypaint-brushes"));
+    if !pack.exists() {
+        eprintln!(
+            "brush pack not found at {} — clone mypaint/mypaint-brushes there\n\
+             or set HOKUSAI_BRUSH_PACK to a directory of `.myb` files.",
+            pack.display()
+        );
+        std::process::exit(2);
+    }
+
+    // Walk for .myb files.
+    let mybs = find_mybs(&pack);
+    if mybs.is_empty() {
+        eprintln!("no .myb files found under {}", pack.display());
+        std::process::exit(2);
+    }
+    eprintln!("scanning {} brushes…", mybs.len());
+
+    // The sample script: a gentle curve with a pressure ramp. Same
+    // canvas for every brush — small enough to render fast, big enough
+    // for stroke dynamics to settle.
+    let script = make_sample_script();
+    let script_path = root.join("tmp/_brush_pack_script.json");
+    std::fs::create_dir_all(script_path.parent().unwrap()).ok();
+    // hokusai_compat::Script doesn't implement Serialize, so format the
+    // tiny JSON by hand. The `brush` field is unused by the C wrapper
+    // (we pass it as a separate argv).
+    let events_json: Vec<String> = script
+        .events
+        .iter()
+        .map(|e| format!("[{},{},{},{}]", e[0], e[1], e[2], e[3]))
+        .collect();
+    let script_json = format!(
+        r#"{{"brush":"unused","width":{w},"height":{h},"events":[{evs}]}}"#,
+        w = script.width,
+        h = script.height,
+        evs = events_json.join(","),
+    );
+    std::fs::write(&script_path, script_json).expect("write sample script");
+
+    let mut rows: Vec<(String, f32, u32, u32)> = Vec::new();
+    for (i, brush_path) in mybs.iter().enumerate() {
+        let rel = brush_path.strip_prefix(&pack).unwrap_or(brush_path);
+        let label = rel.with_extension("").display().to_string();
+        eprint!("\r[{}/{}] {label:<60}", i + 1, mybs.len());
+
+        let lmp_path = root.join("tmp/_lmp_pack.png");
+        let lmp_bytes = match run_libmypaint(&wrapper, &script_path, brush_path, script.width, script.height) {
+            Ok(b) => b,
+            Err(e) => {
+                rows.push((label, f32::NAN, 0, 0));
+                eprintln!("\n  libmypaint failed: {e}");
+                continue;
+            }
+        };
+        save_rgba_png(&lmp_path, &lmp_bytes, script.width, script.height);
+
+        let hok = match hokusai_compat::load_brush(brush_path) {
+            Ok(b) => b,
+            Err(e) => {
+                rows.push((label, f32::NAN, 0, 0));
+                eprintln!("\n  hokusai parse failed: {e}");
+                continue;
+            }
+        };
+        let hok_bytes = hokusai_compat::render(&hok, &script);
+        let hok_path = root.join("tmp/_hok_pack.png");
+        save_rgba_png(&hok_path, &hok_bytes, script.width, script.height);
+
+        let mad = mad_bytes(&lmp_bytes, &hok_bytes);
+        rows.push((label, mad, script.width, script.height));
+    }
+    eprintln!();
+
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let total = rows.len();
+    let passing = rows.iter().filter(|r| r.1 <= 0.5).count();
+    let warn = rows.iter().filter(|r| r.1 > 0.5 && r.1 <= 5.0).count();
+    let fail = rows.iter().filter(|r| r.1 > 5.0 || r.1.is_nan()).count();
+
+    let mut md = String::new();
+    writeln!(md, "# Brush-pack parity report\n").unwrap();
+    writeln!(md, "Pack: `{}`\n", pack.display()).unwrap();
+    writeln!(
+        md,
+        "{total} brushes total — **{passing} passing** (MAD ≤ 0.50), {warn} amber (≤ 5), {fail} red (> 5 or parse failure).\n"
+    )
+    .unwrap();
+    writeln!(md, "| Brush | MAD | Verdict |").unwrap();
+    writeln!(md, "|-------|-----|---------|").unwrap();
+    for (label, mad, _, _) in &rows {
+        let v = if mad.is_nan() {
+            "💥"
+        } else if *mad <= 0.5 {
+            "🟢"
+        } else if *mad <= 5.0 {
+            "🟡"
+        } else {
+            "🔴"
+        };
+        writeln!(md, "| {label} | {mad:.2} | {v} |").unwrap();
+    }
+    let out = root.join("tmp/brush-pack-report.md");
+    std::fs::write(&out, md).expect("write report");
+    println!("wrote {}", out.display());
+    println!("passing: {passing}/{total}");
+}
+
+fn find_mybs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "myb") {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn make_sample_script() -> hokusai_compat::Script {
+    let mut events = Vec::with_capacity(40);
+    let cx = 80.0_f32;
+    let cy = 80.0_f32;
+    for i in 0..=40 {
+        let t = i as f32 / 40.0;
+        let x = 20.0 + 240.0 * t;
+        let y = cy + (t * std::f32::consts::PI * 2.0).sin() * 30.0;
+        let p = (t * std::f32::consts::PI).sin().max(0.05);
+        events.push([x, y, p, 0.02]);
+    }
+    let _ = cx; // canvas centre — unused but documents the layout.
+    hokusai_compat::Script {
+        brush: std::path::PathBuf::new(), // unused by callers
+        width: 320,
+        height: 160,
+        events,
+    }
+}
+
+fn run_libmypaint(
+    wrapper: &std::path::Path,
+    script_path: &std::path::Path,
+    brush_path: &std::path::Path,
+    w: u32,
+    h: u32,
+) -> Result<Vec<u8>, String> {
+    let brush_path = brush_path
+        .canonicalize()
+        .map_err(|e| format!("canonicalize brush: {e}"))?;
+    let out = std::process::Command::new(wrapper)
+        .arg(script_path)
+        .arg(&brush_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("spawn: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "wrapper exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let expected = (w as usize) * (h as usize) * 4;
+    if out.stdout.len() != expected {
+        return Err(format!(
+            "wrapper produced {} bytes, expected {expected}",
+            out.stdout.len()
+        ));
+    }
+    Ok(out.stdout)
+}
+
+fn save_rgba_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) {
+    image::save_buffer(path, rgba, w, h, image::ColorType::Rgba8).ok();
+}
+
+fn mad_bytes(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() {
+        return f32::NAN;
+    }
+    let mut sum = 0u64;
+    for (x, y) in a.iter().zip(b.iter()) {
+        sum += x.abs_diff(*y) as u64;
+    }
+    sum as f32 / a.len() as f32
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("regenerate-goldens") => cmd_regenerate(args.get(1).map(String::as_str)),
         Some("parity-report") => cmd_parity_report(),
+        Some("brush-pack-report") => cmd_brush_pack_report(),
         _ => {
-            eprintln!("usage: cargo xtask <regenerate-goldens [pattern] | parity-report>");
+            eprintln!(
+                "usage: cargo xtask <regenerate-goldens [pattern] | parity-report | brush-pack-report>"
+            );
             std::process::exit(2);
         }
     }

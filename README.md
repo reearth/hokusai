@@ -123,7 +123,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [x] **libmypaint-sourced golden snapshots** — `tools/libmypaint-render/` is a small C wrapper around `mypaint_brush_stroke_to`, and `cargo xtask regenerate-goldens` drives it across the fixture set so `crates/hokusai-compat/fixtures/*.png` is upstream output. `cargo xtask parity-report` renders a side-by-side HTML diff for eyeballing the parity surface
 - [x] **Knuth lagged Fibonacci PRNG** — port of libmypaint's `rng-double.c` (TAOCP 3.6-15) with the same `rand_gauss` scaling (`sum*√3 − 2√3`) and per-dab `random_input` refresh order. Seeding mirrors `rng_double_new(1000)`.
 - [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
-- [ ] Compatibility tests against the full libmypaint brush pack
+- [x] **Brush-pack parity tool** — `cargo xtask brush-pack-report` walks `tmp/mypaint-brushes/` (override via `HOKUSAI_BRUSH_PACK`), drives every `.myb` through a fixed pressure-ramp curve in both libmypaint and hokusai, and writes a sortable Markdown table of per-brush MAD to `tmp/brush-pack-report.md`. Current state: ~80 of 196 stock brushes already pass the MAD ≤ 0.50 tolerance.
 
 ### Backends
 - [x] **`hokusai-tiny-skia`** — flatten any `TiledSurface` into a `tiny_skia::Pixmap` (over-white or transparent variants), with a `hokusai_compat::render` parity test
