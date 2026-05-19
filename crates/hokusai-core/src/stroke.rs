@@ -824,8 +824,11 @@ impl Brush {
                 }
             }
 
-            apply_color_dynamics(self, &dab_sv, state);
-
+            // libmypaint computes the dab colour entirely inside
+            // `prepare_and_draw_dab`: brush base → apply_smudge → eraser
+            // → HSV/HSL dynamics, in that order. We do the same in
+            // `build_dab` now (it took `&mut state` for `state.actual_*`
+            // bookkeeping) — no separate per-dab drift pass.
             let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt, dab_opaque_scale);
             if !skip_dab && surface.draw_dab(&dab) {
                 painted = true;
@@ -930,69 +933,9 @@ impl Brush {
     }
 }
 
-/// Per-dab color drift, ported from libmypaint's `prepare_and_draw_dab`
-/// HSV / HSL adjustment blocks. Unlike hokusai's previous accumulating
-/// `state.actual_*` drift, libmypaint reads the brush's BASE colour each
-/// dab, applies the curve-evaluated delta, then drops the result. The
-/// dab's source colour is therefore `base + delta_this_dab`, never a
-/// running sum.
-///
-/// Writes the resulting straight-alpha RGB into `state.actual_*` so
-/// `build_dab` can read it without redoing the conversions.
-fn apply_color_dynamics(brush: &Brush, sv: &SettingValues, state: &mut BrushState) {
-    let dh = sv.get(BrushSetting::ChangeColorH);
-    let dv = sv.get(BrushSetting::ChangeColorV);
-    let dhsv_s = sv.get(BrushSetting::ChangeColorHsvS);
-    let dl = sv.get(BrushSetting::ChangeColorL);
-    let dhsl_s = sv.get(BrushSetting::ChangeColorHslS);
-    let using_hsv = dh != 0.0 || dhsv_s != 0.0 || dv != 0.0;
-    let using_hsl = dl != 0.0 || dhsl_s != 0.0;
-
-    let base_h = brush.get(BrushSetting::ColorH).base_value;
-    let base_s = brush.get(BrushSetting::ColorS).base_value;
-    let base_v = brush.get(BrushSetting::ColorV).base_value;
-
-    if !using_hsv && !using_hsl {
-        state.actual_h = base_h;
-        state.actual_s = base_s;
-        state.actual_v = base_v;
-        return;
-    }
-
-    // HSV adjustment first. libmypaint's `color_s += color_s * color_v
-    // * CHANGE_COLOR_HSV_S` is multiplicative on saturation, weighted
-    // by value — hokusai's previous straight-additive `actual_s += dhsv_s`
-    // overdrove the saturation drift for any non-grey base colour.
-    let (mut h, mut s, mut v) = (base_h, base_s, base_v);
-    if using_hsv {
-        h = (h + dh).rem_euclid(1.0);
-        s = (s + s * v * dhsv_s).clamp(0.0, 1.0);
-        v = (v + dv).clamp(0.0, 1.0);
-    }
-
-    if using_hsl {
-        // HSV (h, s, v) → RGB → HSL → adjust → HSL → RGB → HSV.
-        let rgb = crate::color::hsv_to_rgb(crate::color::Hsv { h, s, v });
-        let mut hsl = crate::color::rgb_to_hsl(rgb.r, rgb.g, rgb.b);
-        hsl.l = (hsl.l + dl).clamp(0.0, 1.0);
-        // libmypaint scales the HSL-saturation delta by `min(|1-l|, |l|)`
-        // * 2 so it tapers near pure black or white. Hokusai used to
-        // do a flat add, which over-drove the delta near the
-        // extremes.
-        let l = hsl.l;
-        let edge = (1.0 - l).abs().min(l.abs());
-        hsl.s = (hsl.s + hsl.s * edge * 2.0 * dhsl_s).clamp(0.0, 1.0);
-        let rgb2 = crate::color::hsl_to_rgb(hsl);
-        let hsv2 = crate::color::rgb_to_hsv(rgb2.r, rgb2.g, rgb2.b);
-        h = hsv2.h;
-        s = hsv2.s;
-        v = hsv2.v;
-    }
-
-    state.actual_h = h;
-    state.actual_s = s;
-    state.actual_v = v;
-}
+// Color dynamics are folded directly into `build_dab` so they apply
+// *after* `apply_smudge` — matching libmypaint's order in
+// `prepare_and_draw_dab`.
 
 /// Returns the effective `opaque_multiply` factor. When the brush leaves
 /// the setting wholly at defaults (base 0, no inputs) we use 1.0 so the
@@ -1009,7 +952,7 @@ fn opaque_multiplier(brush: &Brush, sv: &SettingValues) -> f32 {
 fn build_dab(
     brush: &Brush,
     sv: &SettingValues,
-    state: &BrushState,
+    state: &mut BrushState,
     px: f32,
     py: f32,
     smudge_amt: f32,
@@ -1018,66 +961,97 @@ fn build_dab(
     // `(orig_radius / new_radius)²` to keep ink density even.
     opaque_scale: f32,
 ) -> Dab {
-    // Base color from the (drifted) HSV state.
+    // libmypaint's `prepare_and_draw_dab` does the full colour
+    // pipeline per dab in this exact order:
+    //   brush BASEVAL(COLOR_*) → apply_smudge → eraser → HSV/HSL dynamics
+    // Hokusai used to keep `state.actual_*` as a running accumulator and
+    // do drift before smudge, which only matters when the brush actually
+    // sets `change_color_*` AND `smudge` together — but several brushes
+    // in the upstream pack do exactly that. Reordering here matches
+    // libmypaint.
+    let base_h = brush.get(BrushSetting::ColorH).base_value;
+    let base_s = brush.get(BrushSetting::ColorS).base_value;
+    let base_v = brush.get(BrushSetting::ColorV).base_value;
     let base = hsv_to_rgb(Hsv {
-        h: state.actual_h,
-        s: state.actual_s,
-        v: state.actual_v,
+        h: base_h,
+        s: base_s,
+        v: base_v,
     });
 
-    // libmypaint's `apply_smudge`: when smudge > 0, fold the sampled
-    // canvas colour (stored as `SMUDGE_R/G/B/A` — premultiplied by the
-    // sample alpha during update) into the brush colour, and derive a
-    // dab-level `eraser_target_alpha` from the smudge bucket's alpha so
-    // a smudge into translucent canvas erases proportionally.
-    //
-    //     eraser_target_alpha = (1 - smudge) + smudge * smudge_a
-    //     color_r             = (smudge * SMUDGE_R + (1 - smudge) * brush_r)
-    //                           / eraser_target_alpha   (straight alpha)
-    //
-    // Hokusai used to do a straight linear blend with `mix_r = SMUDGE_R /
-    // smudge_a` and `alpha_eraser = 1 - eraser`, which left smudge brushes
-    // painting fully opaque dabs even when the smudge bucket was nearly
-    // transparent. That's the bulk of the divergence on the blender /
-    // smear / watercolour brushes in the upstream pack.
+    // 1) apply_smudge: derive eraser_target_alpha + mix the brush
+    //    colour with the smudge bucket. See the libmypaint
+    //    `apply_smudge` helper for the legacy / spectral split.
     let smudge_amt = smudge_amt.clamp(0.0, 1.0);
     let paint_mode = sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
     let eraser_target_alpha =
         ((1.0 - smudge_amt) + smudge_amt * state.smudge_a).clamp(0.0, 1.0);
-    let color = if smudge_amt <= 0.0 || eraser_target_alpha <= 0.0 {
-        crate::color::RgbaF32 {
-            r: base.r,
-            g: base.g,
-            b: base.b,
-            a: 1.0,
-        }
+    let mixed_rgb = if smudge_amt <= 0.0 || eraser_target_alpha <= 0.0 {
+        [base.r, base.g, base.b]
     } else if paint_mode > 0.0 {
-        // Non-legacy apply: spectral / WGM mix of the (straight-alpha)
-        // smudge bucket with the brush colour. `mix_colors` returns
-        // straight alpha; the dab field consumes that directly.
         let smudge_color = [state.smudge_ra, state.smudge_ga, state.smudge_ba, state.smudge_a];
         let brush_color = [base.r, base.g, base.b, 1.0];
         let mixed = crate::spectral::mix_colors(smudge_color, brush_color, smudge_amt, paint_mode);
-        crate::color::RgbaF32 {
-            r: mixed[0].clamp(0.0, 1.0),
-            g: mixed[1].clamp(0.0, 1.0),
-            b: mixed[2].clamp(0.0, 1.0),
-            a: 1.0,
-        }
+        [
+            mixed[0].clamp(0.0, 1.0),
+            mixed[1].clamp(0.0, 1.0),
+            mixed[2].clamp(0.0, 1.0),
+        ]
     } else {
-        // Legacy apply (libmypaint `apply_smudge` with `legacy_smudge =
-        // true`): the smudge bucket is stored as `(1-fac)*a*r` so the
-        // division by `eraser_target_alpha` recovers the straight value.
         let col_factor = 1.0 - smudge_amt;
-        crate::color::RgbaF32 {
-            r: ((smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha)
+        [
+            ((smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha)
                 .clamp(0.0, 1.0),
-            g: ((smudge_amt * state.smudge_ga + col_factor * base.g) / eraser_target_alpha)
+            ((smudge_amt * state.smudge_ga + col_factor * base.g) / eraser_target_alpha)
                 .clamp(0.0, 1.0),
-            b: ((smudge_amt * state.smudge_ba + col_factor * base.b) / eraser_target_alpha)
+            ((smudge_amt * state.smudge_ba + col_factor * base.b) / eraser_target_alpha)
                 .clamp(0.0, 1.0),
-            a: 1.0,
-        }
+        ]
+    };
+
+    // 2) HSV / HSL color dynamics on the *post-smudge* colour. Matches
+    //    libmypaint's order — running drift was already removed; this
+    //    is the per-dab delta on whatever apply_smudge produced.
+    let dh = sv.get(BrushSetting::ChangeColorH);
+    let dv = sv.get(BrushSetting::ChangeColorV);
+    let dhsv_s = sv.get(BrushSetting::ChangeColorHsvS);
+    let dl = sv.get(BrushSetting::ChangeColorL);
+    let dhsl_s = sv.get(BrushSetting::ChangeColorHslS);
+    let mut color_r = mixed_rgb[0];
+    let mut color_g = mixed_rgb[1];
+    let mut color_b = mixed_rgb[2];
+    if dh != 0.0 || dhsv_s != 0.0 || dv != 0.0 {
+        let mut hsv = crate::color::rgb_to_hsv(color_r, color_g, color_b);
+        hsv.h = (hsv.h + dh).rem_euclid(1.0);
+        hsv.s = (hsv.s + hsv.s * hsv.v * dhsv_s).clamp(0.0, 1.0);
+        hsv.v = (hsv.v + dv).clamp(0.0, 1.0);
+        let rgb = hsv_to_rgb(hsv);
+        color_r = rgb.r;
+        color_g = rgb.g;
+        color_b = rgb.b;
+    }
+    if dl != 0.0 || dhsl_s != 0.0 {
+        let mut hsl = crate::color::rgb_to_hsl(color_r, color_g, color_b);
+        hsl.l = (hsl.l + dl).clamp(0.0, 1.0);
+        let edge = (1.0 - hsl.l).abs().min(hsl.l.abs());
+        hsl.s = (hsl.s + hsl.s * edge * 2.0 * dhsl_s).clamp(0.0, 1.0);
+        let rgb = crate::color::hsl_to_rgb(hsl);
+        color_r = rgb.r;
+        color_g = rgb.g;
+        color_b = rgb.b;
+    }
+
+    // Diagnostic / test bookkeeping: the legacy `state.actual_*` fields
+    // now record the last dab's post-dynamics colour.
+    let hsv_out = crate::color::rgb_to_hsv(color_r, color_g, color_b);
+    state.actual_h = hsv_out.h;
+    state.actual_s = hsv_out.s;
+    state.actual_v = hsv_out.v;
+
+    let color = crate::color::RgbaF32 {
+        r: color_r,
+        g: color_g,
+        b: color_b,
+        a: 1.0,
     };
 
     // libmypaint composes the final opacity as opaque * opaque_multiply.
@@ -1585,7 +1559,14 @@ mod tests {
 
     #[test]
     fn change_color_h_drifts_hue() {
+        // libmypaint's HSV drift operates on `rgb_to_hsv(color)` — pure
+        // black/grey has no defined hue, so the delta needs a saturated
+        // base colour to be observable. We seed the brush as red and
+        // verify the per-dab change_color_h actually rotates it.
         let mut brush = make_brush(1.0, 2.0);
+        brush.set(BrushSetting::ColorH, SettingValue::constant(0.0)); // red
+        brush.set(BrushSetting::ColorS, SettingValue::constant(1.0));
+        brush.set(BrushSetting::ColorV, SettingValue::constant(1.0));
         brush.set(BrushSetting::ChangeColorH, SettingValue::constant(0.5));
         let mut state = BrushState::default();
         let mut surf = CountingSurface { count: 0 };
