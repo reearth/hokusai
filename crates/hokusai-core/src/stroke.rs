@@ -187,8 +187,16 @@ impl Brush {
                 (0.0, 0.0)
             };
 
+            // The K-th dab (1-indexed across the stroke's running accumulator)
+            // lands at `(K - dist_past_dab_entry) / total_dabs` along the
+            // segment, where `dist_past_dab_entry` is the carryover *before*
+            // we added total_dabs. Using `accumulated - n` (the post-emit
+            // remainder) instead — as a previous revision did — placed dabs
+            // outside [0, 1] of the segment and produced visible gaps at
+            // event boundaries on real brushes (calligraphy, marker, …).
+            let entry_carry = state.dist_past_dab;
             for i in 1..=n {
-                let frac = (i as f32 - (accumulated - n as f32)) / total_dabs.max(1e-6);
+                let frac = (i as f32 - entry_carry) / total_dabs.max(1e-6);
                 let mut px = prev_actual_x + dx * frac;
                 let mut py = prev_actual_y + dy * frac;
 
