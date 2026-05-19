@@ -824,7 +824,7 @@ impl Brush {
                 }
             }
 
-            drift_color(state, &dab_sv, step_dtime);
+            apply_color_dynamics(self, &dab_sv, state);
 
             let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt, dab_opaque_scale);
             if !skip_dab && surface.draw_dab(&dab) {
@@ -930,36 +930,68 @@ impl Brush {
     }
 }
 
-fn drift_color(state: &mut BrushState, sv: &SettingValues, dt_per_dab: f32) {
-    let k = 0.05 * dt_per_dab * 60.0;
-    let dh = sv.get(BrushSetting::ChangeColorH) * k;
-    let dv = sv.get(BrushSetting::ChangeColorV) * k;
-    let dhsv_s = sv.get(BrushSetting::ChangeColorHsvS) * k;
-    let dl = sv.get(BrushSetting::ChangeColorL) * k;
-    let dhsl_s = sv.get(BrushSetting::ChangeColorHslS) * k;
+/// Per-dab color drift, ported from libmypaint's `prepare_and_draw_dab`
+/// HSV / HSL adjustment blocks. Unlike hokusai's previous accumulating
+/// `state.actual_*` drift, libmypaint reads the brush's BASE colour each
+/// dab, applies the curve-evaluated delta, then drops the result. The
+/// dab's source colour is therefore `base + delta_this_dab`, never a
+/// running sum.
+///
+/// Writes the resulting straight-alpha RGB into `state.actual_*` so
+/// `build_dab` can read it without redoing the conversions.
+fn apply_color_dynamics(brush: &Brush, sv: &SettingValues, state: &mut BrushState) {
+    let dh = sv.get(BrushSetting::ChangeColorH);
+    let dv = sv.get(BrushSetting::ChangeColorV);
+    let dhsv_s = sv.get(BrushSetting::ChangeColorHsvS);
+    let dl = sv.get(BrushSetting::ChangeColorL);
+    let dhsl_s = sv.get(BrushSetting::ChangeColorHslS);
+    let using_hsv = dh != 0.0 || dhsv_s != 0.0 || dv != 0.0;
+    let using_hsl = dl != 0.0 || dhsl_s != 0.0;
 
-    // HSV-side drift first (cheap).
-    state.actual_h = (state.actual_h + dh).rem_euclid(1.0);
-    state.actual_v = (state.actual_v + dv).clamp(0.0, 1.0);
-    state.actual_s = (state.actual_s + dhsv_s).clamp(0.0, 1.0);
+    let base_h = brush.get(BrushSetting::ColorH).base_value;
+    let base_s = brush.get(BrushSetting::ColorS).base_value;
+    let base_v = brush.get(BrushSetting::ColorV).base_value;
 
-    // HSL-side drift: roundtrip via RGB only when the brush actually uses it
-    // (almost no brushes do — keep the common path free of the conversion).
-    if dl != 0.0 || dhsl_s != 0.0 {
-        let rgb = crate::color::hsv_to_rgb(crate::color::Hsv {
-            h: state.actual_h,
-            s: state.actual_s,
-            v: state.actual_v,
-        });
+    if !using_hsv && !using_hsl {
+        state.actual_h = base_h;
+        state.actual_s = base_s;
+        state.actual_v = base_v;
+        return;
+    }
+
+    // HSV adjustment first. libmypaint's `color_s += color_s * color_v
+    // * CHANGE_COLOR_HSV_S` is multiplicative on saturation, weighted
+    // by value — hokusai's previous straight-additive `actual_s += dhsv_s`
+    // overdrove the saturation drift for any non-grey base colour.
+    let (mut h, mut s, mut v) = (base_h, base_s, base_v);
+    if using_hsv {
+        h = (h + dh).rem_euclid(1.0);
+        s = (s + s * v * dhsv_s).clamp(0.0, 1.0);
+        v = (v + dv).clamp(0.0, 1.0);
+    }
+
+    if using_hsl {
+        // HSV (h, s, v) → RGB → HSL → adjust → HSL → RGB → HSV.
+        let rgb = crate::color::hsv_to_rgb(crate::color::Hsv { h, s, v });
         let mut hsl = crate::color::rgb_to_hsl(rgb.r, rgb.g, rgb.b);
         hsl.l = (hsl.l + dl).clamp(0.0, 1.0);
-        hsl.s = (hsl.s + dhsl_s).clamp(0.0, 1.0);
+        // libmypaint scales the HSL-saturation delta by `min(|1-l|, |l|)`
+        // * 2 so it tapers near pure black or white. Hokusai used to
+        // do a flat add, which over-drove the delta near the
+        // extremes.
+        let l = hsl.l;
+        let edge = (1.0 - l).abs().min(l.abs());
+        hsl.s = (hsl.s + hsl.s * edge * 2.0 * dhsl_s).clamp(0.0, 1.0);
         let rgb2 = crate::color::hsl_to_rgb(hsl);
         let hsv2 = crate::color::rgb_to_hsv(rgb2.r, rgb2.g, rgb2.b);
-        state.actual_h = hsv2.h;
-        state.actual_s = hsv2.s;
-        state.actual_v = hsv2.v;
+        h = hsv2.h;
+        s = hsv2.s;
+        v = hsv2.v;
     }
+
+    state.actual_h = h;
+    state.actual_s = s;
+    state.actual_v = v;
 }
 
 /// Returns the effective `opaque_multiply` factor. When the brush leaves
