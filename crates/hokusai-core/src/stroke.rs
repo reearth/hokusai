@@ -40,6 +40,17 @@ impl Brush {
         dtime: f64,
     ) -> bool {
         let pressure = pressure.clamp(0.0, 1.0);
+        // Capture the pressure value from the previous event *before* we
+        // overwrite it: dabs emitted inside this stroke segment interpolate
+        // pressure linearly along the segment, the way libmypaint advances
+        // STATE.PRESSURE inside its `while (dabs_moved + dabs_todo >= 1.0)`
+        // loop. Without this carry, every dab uses the event's final pressure
+        // and pressure-driven dynamics (radius, opacity, …) jump in steps.
+        let entry_pressure = if state.started {
+            state.last_pressure
+        } else {
+            pressure
+        };
         state.last_pressure = pressure;
 
         // --- Fresh stroke: seed state, no dabs ------------------------------
@@ -231,14 +242,29 @@ impl Brush {
             // outside [0, 1] of the segment and produced visible gaps at
             // event boundaries on real brushes (calligraphy, marker, …).
             let entry_carry = state.dist_past_dab;
+            // Per-dab inputs: clone the event-level vector so we only touch
+            // the values that interpolate (pressure for now; speed/tilt are
+            // approximated as constant across the segment).
+            let mut dab_inputs = inputs.clone();
             for i in 1..=n {
                 let frac = (i as f32 - entry_carry) / total_dabs.max(1e-6);
                 let mut px = prev_actual_x + dx * frac;
                 let mut py = prev_actual_y + dy * frac;
 
+                // libmypaint advances STATE.PRESSURE inside the dab loop by
+                // `step_dpressure = frac * (pressure - STATE.PRESSURE)`. We
+                // achieve the same by interpolating from `entry_pressure` to
+                // the event's pressure along the segment fraction.
+                let dab_pressure =
+                    entry_pressure + (pressure - entry_pressure) * frac.clamp(0.0, 1.0);
+                dab_inputs.set(BrushInput::Pressure, dab_pressure);
+                let dab_sv = evaluate(self, &dab_inputs);
+                let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
+                state.actual_radius = dab_radius;
+
                 if off_random > 0.0 {
-                    px += state.rng.next_gauss() * off_random * radius;
-                    py += state.rng.next_gauss() * off_random * radius;
+                    px += state.rng.next_gauss() * off_random * dab_radius;
+                    py += state.rng.next_gauss() * off_random * dab_radius;
                 }
                 if off_speed > 0.0 {
                     // libmypaint pushes the dab along the motion direction
@@ -246,8 +272,8 @@ impl Brush {
                     // unit setting × unit-radius brush gives a one-radius
                     // displacement at moderate speeds.
                     let mag = (state.norm_speed1_slow * 0.04).clamp(-4.0, 4.0);
-                    px += ux * off_speed * radius * mag;
-                    py += uy * off_speed * radius * mag;
+                    px += ux * off_speed * dab_radius * mag;
+                    py += uy * off_speed * dab_radius * mag;
                 }
 
                 // Smudge: refresh bucket from canvas, weighted by smudge_length.
@@ -261,9 +287,9 @@ impl Brush {
                 }
 
                 // Color drift between dabs (change_color_*).
-                drift_color(state, &sv, dt_per_dab);
+                drift_color(state, &dab_sv, dt_per_dab);
 
-                let dab = build_dab(self, &sv, state, px, py, smudge_amt);
+                let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt);
                 if surface.draw_dab(&dab) {
                     painted = true;
                 }
