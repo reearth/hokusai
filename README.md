@@ -110,9 +110,9 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [x] **`Stroke` input** + `stroke_duration_logarithmic` + `stroke_holdtime` + `stroke_threshold` start/end gating
 - [x] **Gridmap inputs** (`gridmap_x`, `gridmap_y`) sampled from `STATE.ACTUAL_X/Y` via `gridmap_scale[_x/_y]`
 - [x] **Extra inputs** (`tilt_declinationx`, `tilt_declinationy`, `viewzoom`, `barrel_rotation`, `brush_radius`)
-- [ ] **Custom input** — recursive evaluation through `custom_input` / `custom_input_slowness`
-- [ ] **Direction smoothing** — `direction_filter` low-pass on `STATE.DIRECTION_*` (input curves still see the raw event direction)
-- [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`) — needs the smoothed direction state above
+- [x] **Custom input** — `custom_input_slowness` smooths `SETTING(custom_input)` into `INPUT(CUSTOM)` so curves can chain lagged outputs back in
+- [x] **Direction smoothing** — `direction_filter` low-pass on `STATE.DIRECTION_*` and `DIRECTION_ANGLE_*`, with the 180°-folded variant for 1D direction curves
+- [x] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`) — full `directional_offsets` port with `STATE.FLIP` mirroring
 
 ### Pixel blending
 - [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
