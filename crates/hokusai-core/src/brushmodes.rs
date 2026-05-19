@@ -726,11 +726,22 @@ where
             a: 0.0,
         };
     }
+    // libmypaint's get_color_internal returns STRAIGHT-alpha color, not
+    // premultiplied (mypaint-tiled-surface.c:758-765). The accumulator
+    // sums premultiplied pixels, then divides RGB by sum_a after the
+    // mask-weighted alpha average. hokusai was returning the
+    // premultiplied average straight to the caller, so smudge brushes
+    // sampling a partially-transparent canvas mixed in artificially
+    // dark RGB.
+    let alpha = sum_a / sum_w;
+    if alpha <= 0.0 {
+        return RgbaF32 { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    }
     RgbaF32 {
-        r: sum_r / sum_w,
-        g: sum_g / sum_w,
-        b: sum_b / sum_w,
-        a: sum_a / sum_w,
+        r: (sum_r / sum_a).clamp(0.0, 1.0),
+        g: (sum_g / sum_a).clamp(0.0, 1.0),
+        b: (sum_b / sum_a).clamp(0.0, 1.0),
+        a: alpha.clamp(0.0, 1.0),
     }
 }
 
