@@ -57,6 +57,16 @@ impl HokusaiBrush {
             .get_mut(hokusai_core::BrushSetting::Radius)
             .base_value = log2_radius;
     }
+
+    /// Read the brush's designed radius (its `radius_logarithmic` base
+    /// value). Useful for UIs that want to offset from the natural size
+    /// rather than override it outright.
+    #[wasm_bindgen(js_name = radiusLog)]
+    pub fn radius_log(&self) -> f32 {
+        self.inner
+            .get(hokusai_core::BrushSetting::Radius)
+            .base_value
+    }
 }
 
 /// A drawable canvas. Holds the tiled surface, an active [`BrushState`],
