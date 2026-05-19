@@ -8,8 +8,11 @@ pub const FIX15_ONE: u32 = 1 << 15;
 pub const FIX15_HALF: u32 = 1 << 14;
 pub const FIX15_MAX_U16: u16 = FIX15_ONE as u16;
 
+// Float ops aren't allowed in `const fn` until Rust 1.82; keep these
+// plain `fn` so the workspace MSRV (1.77) holds. The compiler still
+// inlines them in release builds.
 #[inline]
-pub const fn from_f32(v: f32) -> u16 {
+pub fn from_f32(v: f32) -> u16 {
     let scaled = v * FIX15_ONE as f32;
     let clamped = if scaled < 0.0 {
         0.0
@@ -22,7 +25,7 @@ pub const fn from_f32(v: f32) -> u16 {
 }
 
 #[inline]
-pub const fn to_f32(v: u16) -> f32 {
+pub fn to_f32(v: u16) -> f32 {
     v as f32 / FIX15_ONE as f32
 }
 
