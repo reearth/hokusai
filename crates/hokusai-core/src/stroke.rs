@@ -609,20 +609,17 @@ impl Brush {
             );
 
             // libmypaint computes GRIDMAP_X / GRIDMAP_Y from the (lagged)
-            // dab centre, scaled by `exp(GRIDMAP_SCALE)` and the per-axis
-            // multipliers. The values land in `[0, GRID_SIZE)` so curves
-            // can use them as periodic indices. We read BASEVAL for the
-            // scale settings — they almost never carry input curves in
-            // practice, and treating them as constants per brush avoids a
-            // chicken-and-egg with the per-dab `evaluate(...)` below.
+            // dab centre, scaled by `exp(SETTING(GRIDMAP_SCALE))` and the
+            // per-axis SETTING multipliers (mypaint-brush.c:644-646), all
+            // per-dab. Read from the event-level SV so brushes that drive
+            // gridmap_scale from brush_radius (HalfTone#1) at least see
+            // the curve evaluation rather than the brush's stored 0 base.
+            // brush_radius is event-constant, so a single SV read per
+            // segment is equivalent to libmypaint's per-dab SETTING here.
             const GRID_SIZE: f32 = 256.0;
-            let gscale = self
-                .get(BrushSetting::GridmapScale)
-                .base_value
-                .exp()
-                .max(1e-3);
-            let gscale_x = self.get(BrushSetting::GridmapScaleX).base_value;
-            let gscale_y = self.get(BrushSetting::GridmapScaleY).base_value;
+            let gscale = sv.get(BrushSetting::GridmapScale).exp().max(1e-3);
+            let gscale_x = sv.get(BrushSetting::GridmapScaleX);
+            let gscale_y = sv.get(BrushSetting::GridmapScaleY);
             let scaled_size = gscale * GRID_SIZE;
             let mut gx = (cur_ax * gscale_x).abs().rem_euclid(scaled_size)
                 / scaled_size
