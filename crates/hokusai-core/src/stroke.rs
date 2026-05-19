@@ -2,18 +2,20 @@
 //!
 //! Pipeline per event:
 //! 1. If the stroke is fresh (or `dtime ≥ 5 s`), seed state and return.
-//! 2. Compute raw event delta, speed, direction.
-//! 3. Build [`InputValues`] and evaluate every setting via [`evaluate`].
-//! 4. Apply `slow_tracking` to advance `state.actual_x/y` toward the event.
-//! 5. Accumulate fractional dabs (`dabs_per_*` + time term) along the
-//!    advanced segment; emit each dab, drifting HSV per-dab via
-//!    `change_color_*`, and updating the smudge bucket from the canvas.
-//! 6. Commit final event state.
+//! 2. Compute raw event delta and tilt-derived inputs.
+//! 3. Apply `slow_tracking` to advance `state.actual_x/y` toward the event.
+//! 4. Run a libmypaint-style `while (dabs_moved + dabs_todo >= 1)` loop.
+//!    Each iteration advances `cur_pressure`, `state.norm_speedN_slow`,
+//!    `cur_ax/cur_ay` (lagged dab centre via `slow_tracking_per_dab`) and
+//!    `state.stroke_state`, re-evaluates every setting, then draws the
+//!    dab. `random_input` is refreshed from the PRNG after each draw.
+//! 5. A final no-draw step absorbs the remaining `dtime_left` into the
+//!    speed slowness state so the next event starts cleanly.
 //!
-//! Still deferred (`TODO(M2-followup-2)`): `tracking_noise`, `attack`,
-//! `stroke_holdtime`, `speed1_slowness`/`speed2_slowness` low-pass,
-//! `offset_by_random`/`offset_by_speed`, `stroke_threshold`,
-//! tilt-derived inputs, recursive custom input.
+//! Still deferred: `custom_input` recursive evaluation, `gridmap_*`,
+//! `viewzoom` / `barrel_rotation` / `brush_radius` inputs, the
+//! `attack_angle`-correct semantics (currently aliased to
+//! `stroke_state`), and the `offset_x/y/angle/multiplier` family.
 
 use crate::brush::Brush;
 use crate::color::{hsv_to_rgb, Hsv};
@@ -108,12 +110,29 @@ impl Brush {
         let slow1 = self.get(BrushSetting::Speed1Slowness).base_value.max(0.0);
         let slow2 = self.get(BrushSetting::Speed2Slowness).base_value.max(0.0);
 
-        // --- Stroke progress: 0..1 across `stroke_duration_logarithmic` ----
-        // libmypaint stores duration as `ln(seconds)`, so `exp(dur_log)` is
-        // the configured length in seconds.
-        let dur_log = self.get(BrushSetting::StrokeDurationLogarithmic).base_value;
-        let dur = dur_log.exp().max(0.01);
-        let stroke_progress = (state.stroke_total_painting_time as f32 / dur).clamp(0.0, 1.0);
+        // --- Stroke input: start / end gating ------------------------------
+        // libmypaint flips `STATE.STROKE_STARTED` based on pressure crossing
+        // `stroke_threshold` (and `stroke_threshold * 0.9 + ε` on the way
+        // down). On the rising edge we reset `stroke_state` so `INPUT(STROKE)`
+        // restarts at 0; otherwise we'll advance it per dab below by
+        // `norm_dist * exp(-stroke_duration_logarithmic)` and wrap on
+        // `1 + stroke_holdtime`.
+        let stroke_threshold = self
+            .get(BrushSetting::StrokeThreshold)
+            .base_value
+            .max(0.0);
+        const STROKE_EPS: f32 = 0.0001;
+        if !state.stroke_started && pressure > stroke_threshold + STROKE_EPS {
+            state.stroke_started = true;
+            state.stroke_state = 0.0;
+        } else if state.stroke_started && pressure <= stroke_threshold * 0.9 + STROKE_EPS {
+            state.stroke_started = false;
+        }
+        let stroke_freq = (-self
+            .get(BrushSetting::StrokeDurationLogarithmic)
+            .base_value)
+            .exp();
+        let stroke_wrap = 1.0 + self.get(BrushSetting::StrokeHoldtime).base_value.max(0.0);
 
         // --- Tilt-derived inputs --------------------------------------------
         // libmypaint convention (mypaint-brush.c):
@@ -163,8 +182,16 @@ impl Brush {
         // event. Use the cached value at the event level too — the loop
         // below overrides it per dab to match.
         inputs.set(BrushInput::Random, state.random_input);
-        inputs.set(BrushInput::Stroke, stroke_progress);
-        inputs.set(BrushInput::Attack, stroke_progress);
+        // libmypaint clamps INPUT(STROKE) at evaluation time.
+        inputs.set(BrushInput::Stroke, state.stroke_state.min(1.0));
+        // libmypaint's INPUT(ATTACK_ANGLE): the smallest angular difference
+        // between the pen ascension and (direction_angle + 90°). With no
+        // tilt reported we use the default ascension = 0 (matching the tilt
+        // block above).
+        inputs.set(
+            BrushInput::AttackAngle,
+            attack_angle(tilt_ascension, dx_raw, dy_raw),
+        );
         inputs.set(BrushInput::Direction, direction_input(dx_raw, dy_raw));
         inputs.set(BrushInput::DirectionAngle, direction_angle(dx_raw, dy_raw));
         inputs.set(BrushInput::Tilt, tilt_mag);
@@ -211,24 +238,32 @@ impl Brush {
         } else {
             1.0
         };
+        // --- Tracking noise: gaussian jitter on the raw input position ------
+        // libmypaint adds the noise *before* slow_tracking smoothing, scaled
+        // by `base_radius * BASEVAL(TRACKING_NOISE)` so the jitter doesn't
+        // shrink at low pressure. (libmypaint also has a `skip` mechanism
+        // that makes the noise frequency-independent — we drop that and
+        // jitter on every event for now.)
+        let (mut noisy_x, mut noisy_y) = (x, y);
+        let noise_mag =
+            base_radius * self.get(BrushSetting::TrackingNoise).base_value.max(0.0);
+        if noise_mag > 0.001 {
+            noisy_x += state.rng.next_gauss() * noise_mag;
+            noisy_y += state.rng.next_gauss() * noise_mag;
+        }
+
         let prev_actual_x = state.actual_x;
         let prev_actual_y = state.actual_y;
-        let mut new_actual_x = prev_actual_x + (x - prev_actual_x) * approach;
-        let mut new_actual_y = prev_actual_y + (y - prev_actual_y) * approach;
+        let new_actual_x = prev_actual_x + (noisy_x - prev_actual_x) * approach;
+        let new_actual_y = prev_actual_y + (noisy_y - prev_actual_y) * approach;
 
-        // --- Tracking noise: gaussian jitter on the smoothed position -------
-        let noise = sv.get(BrushSetting::TrackingNoise).max(0.0);
-        if noise > 0.0 {
-            new_actual_x += state.rng.next_gauss() * noise * radius;
-            new_actual_y += state.rng.next_gauss() * noise * radius;
-        }
         let dx = new_actual_x - prev_actual_x;
         let dy = new_actual_y - prev_actual_y;
         let dist = (dx * dx + dy * dy).sqrt();
 
-        // --- Stroke threshold: suppress dabs below a pressure floor --------
-        let threshold = sv.get(BrushSetting::StrokeThreshold).max(0.0);
-        let below_threshold = pressure < threshold;
+        // (Historically hokusai gated dab emission on `stroke_threshold`,
+        // but libmypaint does not — that setting only drives the
+        // `stroke_started` reset around `INPUT(STROKE)`, handled above.)
 
         // --- Dab count along the smoothed segment ---------------------------
         // libmypaint counts dabs with BASE values for DPAR/DPBR/DPS (it
@@ -293,7 +328,7 @@ impl Brush {
         // accumulator picks up wherever the previous event left off. After
         // that every iteration is a full unit dab. Mirrors libmypaint's
         // `step_ddab = (dabs_moved > 0) ? (1 - dabs_moved) : 1.0`.
-        while dabs_moved + dabs_todo >= 1.0 && !below_threshold {
+        while dabs_moved + dabs_todo >= 1.0 {
             let step_ddab = if dabs_moved > 0.0 { 1.0 - dabs_moved } else { 1.0 };
             dabs_moved = 0.0;
             let frac = (step_ddab / dabs_todo.max(1e-6)).clamp(0.0, 1.0);
@@ -334,7 +369,30 @@ impl Brush {
             state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
             state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
 
+            // Advance STATE.STROKE by this step's normalised distance.
+            // `norm_dist = |step| / base_radius`; libmypaint uses this for
+            // the distance contribution so a brush with a larger base radius
+            // takes more pixels to "fill" each unit of stroke. The wrap rule
+            // saturates at 1.0 when stroke_holdtime >= ~9.9 (a hold-forever
+            // signal), otherwise modulos `1 + stroke_holdtime` so periodic
+            // stroke-driven curves cycle.
+            let step_dist =
+                (step_dx * step_dx + step_dy * step_dy).sqrt() / base_radius.max(1e-3);
+            let mut stroke_advance = (state.stroke_state + step_dist * stroke_freq).max(0.0);
+            if stroke_advance >= stroke_wrap {
+                if stroke_wrap > 10.9 {
+                    stroke_advance = 1.0;
+                } else {
+                    stroke_advance %= stroke_wrap;
+                }
+            }
+            state.stroke_state = stroke_advance;
+
             dab_inputs.set(BrushInput::Pressure, cur_pressure);
+            dab_inputs.set(BrushInput::Stroke, state.stroke_state.min(1.0));
+            // AttackAngle is event-level (depends on raw direction, not the
+            // per-dab interpolated state) so inheriting from `inputs` is
+            // already correct — no per-dab override needed.
             dab_inputs.set(
                 BrushInput::Speed1,
                 speed_input(
@@ -685,6 +743,22 @@ fn count_dabs_to(
     num_actual + num_basic + num_time
 }
 
+/// libmypaint's `INPUT(ATTACK_ANGLE)`: the smallest angular difference
+/// between the pen's ascension direction and the stroke direction (offset
+/// by 90°), both in degrees, wrapped to `(-180, 180]`.
+fn attack_angle(ascension_deg: f32, dx_raw: f32, dy_raw: f32) -> f32 {
+    if dx_raw == 0.0 && dy_raw == 0.0 {
+        return 0.0;
+    }
+    let direction_deg = dy_raw.atan2(dx_raw).to_degrees();
+    // `mod_arith(DEGREES(dir) + 90, 360)` in libmypaint.
+    let target = ((direction_deg + 90.0).rem_euclid(360.0) + 360.0).rem_euclid(360.0);
+    // Smallest signed angular difference.
+    let mut d = ascension_deg - target;
+    d = (d + 180.0).rem_euclid(360.0) - 180.0;
+    d
+}
+
 fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
     let gamma = gamma_log.exp();
     let fix1 = 45.0_f32;
@@ -793,21 +867,32 @@ mod tests {
     }
 
     #[test]
-    fn stroke_threshold_suppresses_low_pressure_dabs() {
+    fn stroke_threshold_drives_stroke_state_reset() {
+        // libmypaint's stroke_threshold does *not* suppress dabs. It only
+        // gates `STATE.STROKE_STARTED`: when pressure rises above the
+        // threshold the stroke restarts (`stroke_state` → 0); when it falls
+        // back below `threshold * 0.9` the started flag clears so the next
+        // rise resets again.
         let mut brush = make_brush(1.0, 2.0);
         brush.set(BrushSetting::StrokeThreshold, SettingValue::constant(0.5));
         let mut state = BrushState::default();
         let mut surf = CountingSurface { count: 0 };
+        // Pressure below threshold: started stays false, but dabs still land.
         brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 0.3, 0.0, 0.0, 0.01);
         brush.stroke_to(&mut state, &mut surf, 20.0, 0.0, 0.3, 0.0, 0.0, 0.01);
-        assert_eq!(surf.count, 0, "pressure 0.3 should be below threshold 0.5");
+        assert!(surf.count > 0, "stroke_threshold no longer gates dab emission");
+        assert!(!state.stroke_started, "0.3 < threshold 0.5, started stays off");
 
-        // Same motion, pressure above threshold: dabs land.
-        let mut state2 = BrushState::default();
+        // Above threshold (after a seed pass): started flips on and
+        // stroke_state restarts at 0.
+        let mut s2 = BrushState::default();
         let mut surf2 = CountingSurface { count: 0 };
-        brush.stroke_to(&mut state2, &mut surf2, 0.0, 0.0, 0.8, 0.0, 0.0, 0.01);
-        brush.stroke_to(&mut state2, &mut surf2, 20.0, 0.0, 0.8, 0.0, 0.0, 0.01);
-        assert!(surf2.count > 0, "pressure 0.8 should produce dabs");
+        // First call always goes through the seed branch.
+        brush.stroke_to(&mut s2, &mut surf2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01);
+        s2.stroke_state = 0.7;
+        brush.stroke_to(&mut s2, &mut surf2, 1.0, 0.0, 0.8, 0.0, 0.0, 0.01);
+        assert!(s2.stroke_started, "pressure above threshold sets started=true");
+        assert_eq!(s2.stroke_state, 0.0, "rising-edge reset wipes prior stroke_state");
     }
 
     #[test]

@@ -9,3 +9,4 @@ Cargo.lock
 /crates/hokusai-compat/fixtures/*.actual.png
 /tools/libmypaint-render/libmypaint-render
 /tmp/
+tmp/

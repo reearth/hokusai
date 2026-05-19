@@ -31,6 +31,16 @@ pub struct BrushState {
     // Stroke accounting.
     pub stroke_total_painting_time: f64,
     pub stroke_current_idling_time: f64,
+    /// libmypaint's `STATE.STROKE`. Accumulates `norm_dist * exp(-stroke_duration_logarithmic)`
+    /// each dab and feeds `INPUT(STROKE)` (clamped to ≤ 1.0). Wrapped by
+    /// `1 + stroke_holdtime`; once stroke_holdtime > 9.9 the value
+    /// saturates at 1.0 until the stroke ends.
+    pub stroke_state: f32,
+    /// libmypaint's `STATE.STROKE_STARTED`. Flips on when `pressure`
+    /// crosses above `stroke_threshold`, and off when it drops back below
+    /// `stroke_threshold * 0.9`. On the rising edge the next dab resets
+    /// `stroke_state` to 0 so the `Stroke` input starts a fresh ramp.
+    pub stroke_started: bool,
 
     // Distance accumulated since last dab (so dab count is fractional-stable).
     pub dist_past_dab: f32,
@@ -87,6 +97,8 @@ impl BrushState {
             norm_speed2_slow: 0.0,
             stroke_total_painting_time: 0.0,
             stroke_current_idling_time: 0.0,
+            stroke_state: 0.0,
+            stroke_started: false,
             dist_past_dab: 0.0,
             last_dab_x: 0.0,
             last_dab_y: 0.0,
