@@ -25,12 +25,13 @@ hokusai/
 │   ├── hokusai-core/        # Brush types, stroke engine, fix15, tiles, brushmodes
 │   ├── hokusai-brush/       # libmypaint `.myb` JSON read / write
 │   ├── hokusai-tile-mem/    # Reference in-memory TiledSurface
-│   └── hokusai-compat/      # Snapshot regression harness (libmypaint parity track)
+│   ├── hokusai-compat/      # Snapshot regression harness (libmypaint parity track)
+│   └── hokusai-wasm/        # wasm-bindgen bindings + browser demo
 └── hokusai/                 # Umbrella crate that re-exports the above via features
     └── examples/            # stroke_to_png, myb_to_png (+ vendored .myb fixtures)
 ```
 
-Planned: `hokusai-tiny-skia` (raster output), `hokusai-wasm` (`wasm-bindgen` glue).
+Planned: `hokusai-tiny-skia` (raster output).
 
 ## Quick look
 
@@ -117,7 +118,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ### Backends
 - [ ] **`hokusai-tiny-skia`** — flatten tiles into a `tiny-skia` `Pixmap`
-- [ ] **`hokusai-wasm`** — `wasm-bindgen` JS bindings + browser demo
+- [x] **`hokusai-wasm`** — `wasm-bindgen` JS bindings + browser demo
 
 ## Cargo features (umbrella `hokusai` crate)
 

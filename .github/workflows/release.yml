@@ -28,6 +28,8 @@ jobs:
         run: cargo publish -p hokusai-brush --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish hokusai-tile-mem
         run: cargo publish -p hokusai-tile-mem --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish hokusai-wasm
+        run: cargo publish -p hokusai-wasm --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish hokusai
         run: cargo publish -p hokusai --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

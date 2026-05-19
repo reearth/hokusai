@@ -4,3 +4,5 @@ Cargo.lock
 .DS_Store
 /out.png
 /out-*.png
+/crates/hokusai-wasm/demo/pkg/
+/crates/hokusai-wasm/demo/brushes/

@@ -1,0 +1,27 @@
+[package]
+name = "hokusai-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "wasm-bindgen bindings for the hokusai brush engine"
+readme = "../../README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hokusai-core = { workspace = true }
+hokusai-brush = { workspace = true }
+hokusai-tile-mem = { workspace = true }
+wasm-bindgen = "0.2"
+
+# Smaller panic handler for production wasm builds. Kept off by default so
+# panic messages reach the JS console during development.
+[features]
+default = []
+small-panic = []
