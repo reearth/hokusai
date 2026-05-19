@@ -7,6 +7,7 @@ members = [
     "crates/hokusai-compat",
     "crates/hokusai-wasm",
     "hokusai",
+    "xtask",
 ]
 
 [workspace.package]
