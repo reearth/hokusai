@@ -22,6 +22,23 @@
 
 #define FIX15_ONE 32768
 
+static MyPaintSurfaceDrawDabFunction orig_draw_dab;
+static int trace_dab_count;
+
+static int trace_draw_dab(
+    MyPaintSurface *self, float x, float y, float radius,
+    float r, float g, float b, float opaque, float hardness,
+    float alpha_eraser, float aspect_ratio, float angle,
+    float lock_alpha, float colorize)
+{
+    trace_dab_count++;
+    fprintf(stderr,
+        "  lmp#%d: (%6.2f,%6.2f) r=%5.2f hard=%4.2f opaq=%4.2f aspect=%4.2f ang=%6.1f\n",
+        trace_dab_count, x, y, radius, hardness, opaque, aspect_ratio, angle);
+    return orig_draw_dab(self, x, y, radius, r, g, b, opaque, hardness,
+                          alpha_eraser, aspect_ratio, angle, lock_alpha, colorize);
+}
+
 static float linear_to_srgb(float v) {
     if (v <= 0.0f) return 0.0f;
     if (v >= 1.0f) return 1.0f;
@@ -81,6 +98,14 @@ int main(int argc, char **argv) {
 
     MyPaintFixedTiledSurface *fts = mypaint_fixed_tiled_surface_new(width, height);
     MyPaintSurface *surface = mypaint_fixed_tiled_surface_interface(fts);
+
+    // Optionally trace every dab to stderr. Set HOKUSAI_TRACE_DABS=1 to
+    // enable; the output mirrors hokusai-compat's `debug_dabs` example for
+    // direct comparison while diagnosing parity gaps.
+    if (getenv("HOKUSAI_TRACE_DABS")) {
+        orig_draw_dab = surface->draw_dab;
+        surface->draw_dab = trace_draw_dab;
+    }
 
     // Warm-up: libmypaint's first stroke_to applies slow_tracking smoothing
     // BEFORE detecting the reset_requested flag, so for brushes with heavy

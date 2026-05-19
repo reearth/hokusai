@@ -88,21 +88,25 @@ impl Brush {
         let raw_speed = dist_raw / dt;
 
         // --- Speed slowness: low-pass filter the raw speed for both bands ---
-        // libmypaint reads slowness from the brush base values (these settings
-        // rarely receive input mappings, so the simplification is exact in
-        // practice and avoids the chicken-and-egg of speed-feeding-itself).
-        let slow1 = self
-            .get(BrushSetting::Speed1Slowness)
-            .base_value
-            .clamp(0.0, 1.0);
-        let slow2 = self
-            .get(BrushSetting::Speed2Slowness)
-            .base_value
-            .clamp(0.0, 1.0);
-        let alpha1 = 1.0 - (1.0 - slow1).powf((dt * 60.0).max(1e-3));
-        let alpha2 = 1.0 - (1.0 - slow2).powf((dt * 60.0).max(1e-3));
-        state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * (1.0 - alpha1);
-        state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * (1.0 - alpha2);
+        // libmypaint treats `speedN_slowness` as a time constant in seconds
+        // and applies `fac = 1 - exp(-dt / slow)`. We read the base value
+        // (these settings rarely receive input mappings, so the
+        // simplification is exact in practice and avoids the chicken-and-egg
+        // of speed-feeding-itself).
+        let slow1 = self.get(BrushSetting::Speed1Slowness).base_value.max(0.0);
+        let slow2 = self.get(BrushSetting::Speed2Slowness).base_value.max(0.0);
+        let fac1 = if slow1 > 1e-3 {
+            1.0 - (-dt / slow1).exp()
+        } else {
+            1.0
+        };
+        let fac2 = if slow2 > 1e-3 {
+            1.0 - (-dt / slow2).exp()
+        } else {
+            1.0
+        };
+        state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
+        state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
 
         // --- Stroke progress: 0..1 across `stroke_duration_logarithmic` ----
         // libmypaint stores duration as `ln(seconds)`, so `exp(dur_log)` is
@@ -128,11 +132,32 @@ impl Brush {
             (m, 90.0 - m * 60.0, (-xtilt).atan2(ytilt).to_degrees())
         };
 
+        // --- Speed input mapping --------------------------------------------
+        // libmypaint maps the smoothed normalised speed through a logarithmic
+        // curve with two fix-points anchored at `(speed=45, value=0.5)` and
+        // slope `0.015` there:
+        //     gamma = exp(speedN_gamma)
+        //     m     = 0.015 * (45 + gamma)
+        //     q     = 0.5 - m * log(45 + gamma)
+        //     value = log(gamma + speed) * m + q
+        // The previous `0.5 * log10(0.01 + speed)` shortcut ignored the brush's
+        // `speedN_gamma` entirely and used a different curve shape, so brushes
+        // whose dynamics ride on `speed1` (calligraphy hardness/radius,
+        // marker pressure-vs-speed) ended up with wildly wrong inputs.
+        let speed1_input = speed_input(
+            state.norm_speed1_slow,
+            self.get(BrushSetting::Speed1Gamma).base_value,
+        );
+        let speed2_input = speed_input(
+            state.norm_speed2_slow,
+            self.get(BrushSetting::Speed2Gamma).base_value,
+        );
+
         // --- Build input vector ---------------------------------------------
         let mut inputs = InputValues::new();
         inputs.set(BrushInput::Pressure, pressure);
-        inputs.set(BrushInput::Speed1, log_speed(state.norm_speed1_slow));
-        inputs.set(BrushInput::Speed2, log_speed(state.norm_speed2_slow));
+        inputs.set(BrushInput::Speed1, speed1_input);
+        inputs.set(BrushInput::Speed2, speed2_input);
         inputs.set(BrushInput::Random, state.rng.next_unit());
         inputs.set(BrushInput::Stroke, stroke_progress);
         inputs.set(BrushInput::Attack, stroke_progress);
@@ -483,8 +508,16 @@ fn build_dab(
     }
 }
 
-fn log_speed(raw: f32) -> f32 {
-    0.5 * (0.01 + raw).log10()
+/// libmypaint's per-speed input mapping. The brush's `speedN_gamma` setting
+/// is `ln(gamma)`; with `gamma`, `m`, and `q` derived to anchor the curve at
+/// `(speed=45, value=0.5)` with slope `0.015`, the resulting input is
+/// `log(gamma + speed) * m + q`.
+fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
+    let gamma = gamma_log.exp();
+    let fix1 = 45.0_f32;
+    let m = 0.015 * (fix1 + gamma);
+    let q = 0.5 - m * (fix1 + gamma).ln();
+    (gamma + speed_norm.max(0.0)).ln() * m + q
 }
 
 fn direction_input(dx: f32, dy: f32) -> f32 {
