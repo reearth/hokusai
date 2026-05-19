@@ -105,9 +105,9 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`)
 
 ### Pixel blending
-- [ ] **Colorize** — HSL hue/saturation replacement at the destination pixel
+- [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
 - [ ] **Spectral `paint` mode** — modern MyPaint pigment mixing
-- [ ] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
+- [x] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
 - [ ] Direct `tile_lookup`-free `get_color` path for backends that can't expose tiles
 
 ### Compatibility

@@ -128,6 +128,36 @@ fn anti_aliasing_softens_hard_edge() {
 }
 
 #[test]
+fn colorize_replaces_hue_keeps_value() {
+    let mut s = MemSurface::new();
+    // Lay down medium-grey blob (a=1, rgb=0.5).
+    let mut grey = red_dab(32.0, 32.0, 6.0);
+    grey.color = RgbaF32::new(0.5, 0.5, 0.5, 1.0);
+    s.draw_dab(&grey);
+
+    // Colorize with pure red, colorize=1.0.
+    let mut colorize = red_dab(32.0, 32.0, 6.0);
+    colorize.color = RgbaF32::new(1.0, 0.0, 0.0, 1.0);
+    colorize.colorize = 1.0;
+    s.draw_dab(&colorize);
+
+    let p = s.tile(0, 0).unwrap()[32][32];
+    let a = fix15::to_f32(p[3]);
+    let r = fix15::to_f32(p[0]) / a;
+    let g = fix15::to_f32(p[1]) / a;
+    let b = fix15::to_f32(p[2]) / a;
+
+    // V of the result should still ~match the original grey's V (0.5).
+    let v = r.max(g).max(b);
+    assert!(
+        (v - 0.5).abs() < 0.05,
+        "value should be preserved, got v={v}"
+    );
+    // R should dominate (we took red's hue).
+    assert!(r > g && r > b, "red hue should win: ({r},{g},{b})");
+}
+
+#[test]
 fn get_color_reads_painted_region() {
     let mut s = MemSurface::new();
     s.draw_dab(&red_dab(32.0, 32.0, 6.0));

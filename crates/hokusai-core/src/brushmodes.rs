@@ -130,6 +130,8 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 dab.lock_alpha.clamp(0.0, 1.0),
                 dab.posterize.clamp(0.0, 1.0),
                 dab.posterize_num.max(1.0),
+                dab.colorize.clamp(0.0, 1.0),
+                src,
                 src_r,
                 src_g,
                 src_b,
@@ -163,6 +165,8 @@ fn paint_into_tile(
     lock_alpha: f32,
     posterize: f32,
     posterize_num: f32,
+    colorize: f32,
+    src_color: RgbaF32,
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -217,6 +221,15 @@ fn paint_into_tile(
                 (opa_alpha_raw, true)
             };
 
+            // Colorize: replace dst's hue and saturation (HSV) with the dab's,
+            // preserving dst's value. When colorize=0 the regular Normal blend
+            // applies. Done in straight alpha → convert, replace, repremul.
+            if colorize > 0.0 && da > 0 {
+                colorize_pixel(dst, src_color, mask, colorize);
+                painted = true;
+                continue;
+            }
+
             dst[0] = blend(dr, inv_mask, src_r, color_opa_alpha);
             dst[1] = blend(dg, inv_mask, src_g, color_opa_alpha);
             dst[2] = blend(db, inv_mask, src_b, color_opa_alpha);
@@ -243,6 +256,33 @@ fn paint_into_tile(
 fn lerp_fix15(a: u32, b: u32, t: f32) -> u32 {
     let t_fix = (t.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
     fix15::mul(a, FIX15_ONE - t_fix) + fix15::mul(b, t_fix)
+}
+
+/// Colorize: replace the pixel's hue+saturation with `src_color`'s, blended
+/// by `mask` (dab coverage) and `amount` (colorize strength). dst.a stays.
+fn colorize_pixel(pixel: &mut [u16; 4], src_color: RgbaF32, mask: u32, amount: f32) {
+    let a = pixel[3] as f32 / FIX15_ONE as f32;
+    if a <= 0.0 {
+        return;
+    }
+    let dr = (pixel[0] as f32 / FIX15_ONE as f32) / a;
+    let dg = (pixel[1] as f32 / FIX15_ONE as f32) / a;
+    let db = (pixel[2] as f32 / FIX15_ONE as f32) / a;
+    let dst_hsv = crate::color::rgb_to_hsv(dr, dg, db);
+    let src_hsv = crate::color::rgb_to_hsv(src_color.r, src_color.g, src_color.b);
+    // Keep dst.v, take src.h + src.s by `amount`.
+    let mixed = crate::color::hsv_to_rgb(crate::color::Hsv {
+        h: src_hsv.h,
+        s: dst_hsv.s + (src_hsv.s - dst_hsv.s) * amount,
+        v: dst_hsv.v,
+    });
+    let mask_f = mask as f32 / FIX15_ONE as f32;
+    let nr = (dr + (mixed.r - dr) * mask_f * amount) * a;
+    let ng = (dg + (mixed.g - dg) * mask_f * amount) * a;
+    let nb = (db + (mixed.b - db) * mask_f * amount) * a;
+    pixel[0] = (nr.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+    pixel[1] = (ng.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+    pixel[2] = (nb.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
 }
 
 /// Posterize `pixel` toward `pnum` quantization levels by `amount` (fix15).

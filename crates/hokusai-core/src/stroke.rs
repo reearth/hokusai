@@ -241,13 +241,35 @@ impl Brush {
 }
 
 fn drift_color(state: &mut BrushState, sv: &SettingValues, dt_per_dab: f32) {
-    // libmypaint scales the drift by 0.05 per dab — keeps "tiny constant"
-    // values usable.
     let k = 0.05 * dt_per_dab * 60.0;
-    state.actual_h = (state.actual_h + sv.get(BrushSetting::ChangeColorH) * k).rem_euclid(1.0);
-    state.actual_v = (state.actual_v + sv.get(BrushSetting::ChangeColorV) * k).clamp(0.0, 1.0);
-    state.actual_s = (state.actual_s + sv.get(BrushSetting::ChangeColorHsvS) * k).clamp(0.0, 1.0);
-    // change_color_hsl_s and change_color_l would need HSL math; deferred.
+    let dh = sv.get(BrushSetting::ChangeColorH) * k;
+    let dv = sv.get(BrushSetting::ChangeColorV) * k;
+    let dhsv_s = sv.get(BrushSetting::ChangeColorHsvS) * k;
+    let dl = sv.get(BrushSetting::ChangeColorL) * k;
+    let dhsl_s = sv.get(BrushSetting::ChangeColorHslS) * k;
+
+    // HSV-side drift first (cheap).
+    state.actual_h = (state.actual_h + dh).rem_euclid(1.0);
+    state.actual_v = (state.actual_v + dv).clamp(0.0, 1.0);
+    state.actual_s = (state.actual_s + dhsv_s).clamp(0.0, 1.0);
+
+    // HSL-side drift: roundtrip via RGB only when the brush actually uses it
+    // (almost no brushes do — keep the common path free of the conversion).
+    if dl != 0.0 || dhsl_s != 0.0 {
+        let rgb = crate::color::hsv_to_rgb(crate::color::Hsv {
+            h: state.actual_h,
+            s: state.actual_s,
+            v: state.actual_v,
+        });
+        let mut hsl = crate::color::rgb_to_hsl(rgb.r, rgb.g, rgb.b);
+        hsl.l = (hsl.l + dl).clamp(0.0, 1.0);
+        hsl.s = (hsl.s + dhsl_s).clamp(0.0, 1.0);
+        let rgb2 = crate::color::hsl_to_rgb(hsl);
+        let hsv2 = crate::color::rgb_to_hsv(rgb2.r, rgb2.g, rgb2.b);
+        state.actual_h = hsv2.h;
+        state.actual_s = hsv2.s;
+        state.actual_v = hsv2.v;
+    }
 }
 
 fn build_dab(sv: &SettingValues, state: &BrushState, px: f32, py: f32, smudge_amt: f32) -> Dab {
