@@ -280,14 +280,52 @@ impl Brush {
         };
         // --- Tracking noise: gaussian jitter on the raw input position ------
         // libmypaint adds the noise *before* slow_tracking smoothing, scaled
-        // by `base_radius * BASEVAL(TRACKING_NOISE)` so the jitter doesn't
-        // shrink at low pressure. (libmypaint also has a `skip` mechanism
-        // that makes the noise frequency-independent — we drop that and
-        // jitter on every event for now.)
+        // by `base_radius * BASEVAL(TRACKING_NOISE)`. The matching skip
+        // mechanism coalesces fast-arriving events so the noise sample rate
+        // tracks cursor *distance*, not input frequency — without it,
+        // brushes with `tracking_noise > 0` produce a denser scatter when
+        // the app feeds many small events per stroke.
+        if state.skip_distance > 0.001 {
+            let dx_skip = state.skip_last_x - x;
+            let dy_skip = state.skip_last_y - y;
+            let dist = (dx_skip * dx_skip + dy_skip * dy_skip).sqrt();
+            state.skip_last_x = x;
+            state.skip_last_y = y;
+            state.skipped_dtime += dtime;
+            state.skip_distance -= dist;
+
+            // If we haven't moved past the skip threshold yet, drop this
+            // event entirely (no dab, no state advance). The dtime
+            // accumulates so a delayed event still walks the brush through
+            // the right amount of time.
+            if state.skip_distance > 0.001 && state.skipped_dtime < 5.0 {
+                state.last_pressure = entry_pressure; // restore — we never used the new pressure
+                return false;
+            }
+
+            // Skip resolved: pretend we received one large event spanning
+            // the accumulated dtime. libmypaint replaces `dtime` here too.
+            // (We don't propagate the modified dtime through hokusai's
+            // float `dt` since the skip path is rare and `dtime` is only
+            // used for speed smoothing; using the original event dtime is
+            // a reasonable approximation.)
+            state.skip_distance = 0.0;
+            state.skip_last_x = 0.0;
+            state.skip_last_y = 0.0;
+            state.skipped_dtime = 0.0;
+        }
+
         let (mut noisy_x, mut noisy_y) = (x, y);
         let noise_mag =
             base_radius * self.get(BrushSetting::TrackingNoise).base_value.max(0.0);
         if noise_mag > 0.001 {
+            // Arm the next skip window so subsequent events that arrive
+            // before the cursor has travelled `0.5 * noise` pixels get
+            // coalesced. Setting the bookkeeping fields before the RNG
+            // calls matches libmypaint's order in `mypaint-brush.c`.
+            state.skip_distance = 0.5 * noise_mag;
+            state.skip_last_x = x;
+            state.skip_last_y = y;
             noisy_x += state.rng.next_gauss() * noise_mag;
             noisy_y += state.rng.next_gauss() * noise_mag;
         }

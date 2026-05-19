@@ -50,6 +50,16 @@ pub struct BrushState {
     /// `brush_reset` initialises it to `-1` so the first dab toggles to
     /// `+1` — matching the upstream comment.
     pub flip: f32,
+    /// libmypaint's `tracking_noise` skip distance — coalesces incoming
+    /// events until the cursor has travelled past `0.5 * noise * base_radius`
+    /// pixels, at which point one new noise sample is consumed. Keeps
+    /// noise-heavy brushes (DNA_brush, particle scatters, …) producing the
+    /// same point density regardless of how often the app sends pointer
+    /// events.
+    pub skip_distance: f32,
+    pub skip_last_x: f32,
+    pub skip_last_y: f32,
+    pub skipped_dtime: f64,
     /// libmypaint's `STATE.ASCENSION` — the dab-by-dab smoothed ascension
     /// angle (degrees). Advanced inside the dab loop by `frac *
     /// smallest_angular_difference(STATE.ASCENSION, target_ascension)`
@@ -138,6 +148,10 @@ impl BrushState {
             direction_angle_dy: 0.0,
             custom_input: 0.0,
             flip: -1.0,
+            skip_distance: 0.0,
+            skip_last_x: 0.0,
+            skip_last_y: 0.0,
+            skipped_dtime: 0.0,
             ascension: 0.0,
             // libmypaint defaults declination to 90° (pen straight up).
             declination: 90.0,
