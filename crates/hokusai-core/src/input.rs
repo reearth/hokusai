@@ -21,6 +21,11 @@ pub enum BrushInput {
     GridmapX,
     GridmapY,
     Custom,
+    TiltDeclinationX,
+    TiltDeclinationY,
+    Viewzoom,
+    BarrelRotation,
+    BrushRadius,
 }
 
 impl BrushInput {
@@ -39,6 +44,11 @@ impl BrushInput {
         Self::GridmapX,
         Self::GridmapY,
         Self::Custom,
+        Self::TiltDeclinationX,
+        Self::TiltDeclinationY,
+        Self::Viewzoom,
+        Self::BarrelRotation,
+        Self::BrushRadius,
     ];
 
     pub const fn cname(self) -> &'static str {
@@ -57,6 +67,11 @@ impl BrushInput {
             Self::GridmapX => "gridmap_x",
             Self::GridmapY => "gridmap_y",
             Self::Custom => "custom",
+            Self::TiltDeclinationX => "tilt_declinationx",
+            Self::TiltDeclinationY => "tilt_declinationy",
+            Self::Viewzoom => "viewzoom",
+            Self::BarrelRotation => "barrel_rotation",
+            Self::BrushRadius => "brush_radius",
         }
     }
 

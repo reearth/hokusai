@@ -6,8 +6,9 @@
 //! - Dab position `(x, y)` is in world-pixel space (sub-pixel f32).
 //! - Dab `color` is straight-alpha linear sRGB; we premultiply at blend time.
 //!
-//! This first cut implements `BlendMode_Normal_and_Eraser` only. Colorize,
-//! Posterize, LockAlpha, and the spectral `paint` mode are TODOs for M3-followup.
+//! Implements libmypaint's `BlendMode_Normal_and_Eraser` plus the
+//! `Colorize` / `Posterize` / `LockAlpha` overlays. The spectral `paint`
+//! pigment-mixing mode is still deferred.
 
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 

@@ -12,10 +12,11 @@
 //! 5. A final no-draw step absorbs the remaining `dtime_left` into the
 //!    speed slowness state so the next event starts cleanly.
 //!
-//! Still deferred: `custom_input` recursive evaluation, `gridmap_*`,
-//! `viewzoom` / `barrel_rotation` / `brush_radius` inputs, the
-//! `attack_angle`-correct semantics (currently aliased to
-//! `stroke_state`), and the `offset_x/y/angle/multiplier` family.
+//! Still deferred: `custom_input` recursive evaluation (`custom_input`
+//! and `custom_input_slowness` settings), `direction_filter` smoothing
+//! of `STATE.DIRECTION_*`, and the `offset_x` / `offset_y` /
+//! `offset_angle*` / `offset_multiplier` family that needs the smoothed
+//! direction state to compute `directional_offsets`.
 
 use crate::brush::Brush;
 use crate::color::{hsv_to_rgb, Hsv};
@@ -197,6 +198,20 @@ impl Brush {
         inputs.set(BrushInput::Tilt, tilt_mag);
         inputs.set(BrushInput::TiltDeclination, tilt_declination);
         inputs.set(BrushInput::TiltAscension, tilt_ascension);
+        // libmypaint maps the signed tilt components directly to
+        // `*60` degrees so curves can use the per-axis lean separately.
+        inputs.set(BrushInput::TiltDeclinationX, xtilt * 60.0);
+        inputs.set(BrushInput::TiltDeclinationY, ytilt * 60.0);
+        // `viewzoom = log(scale)` in libmypaint; with the app feeding no
+        // zoom information we sit at the neutral value (1.0× → 0).
+        inputs.set(BrushInput::Viewzoom, 0.0);
+        // No barrel/twist on a plain stroke_to API, so always 0°.
+        inputs.set(BrushInput::BarrelRotation, 0.0);
+        // libmypaint feeds `BASEVAL(RADIUS_LOGARITHMIC)` directly (`ln(r)`).
+        inputs.set(
+            BrushInput::BrushRadius,
+            self.get(BrushSetting::Radius).base_value,
+        );
         let sv = evaluate(self, &inputs);
 
         // libmypaint's *base_radius* is `expf(BASEVAL(RADIUS_LOGARITHMIC))` —
@@ -408,6 +423,38 @@ impl Brush {
                 ),
             );
             dab_inputs.set(BrushInput::Random, state.random_input);
+
+            // libmypaint computes GRIDMAP_X / GRIDMAP_Y from the (lagged)
+            // dab centre, scaled by `exp(GRIDMAP_SCALE)` and the per-axis
+            // multipliers. The values land in `[0, GRID_SIZE)` so curves
+            // can use them as periodic indices. We read BASEVAL for the
+            // scale settings — they almost never carry input curves in
+            // practice, and treating them as constants per brush avoids a
+            // chicken-and-egg with the per-dab `evaluate(...)` below.
+            const GRID_SIZE: f32 = 256.0;
+            let gscale = self
+                .get(BrushSetting::GridmapScale)
+                .base_value
+                .exp()
+                .max(1e-3);
+            let gscale_x = self.get(BrushSetting::GridmapScaleX).base_value;
+            let gscale_y = self.get(BrushSetting::GridmapScaleY).base_value;
+            let scaled_size = gscale * GRID_SIZE;
+            let mut gx = (cur_ax * gscale_x).abs().rem_euclid(scaled_size)
+                / scaled_size
+                * GRID_SIZE;
+            let mut gy = (cur_ay * gscale_y).abs().rem_euclid(scaled_size)
+                / scaled_size
+                * GRID_SIZE;
+            if cur_ax < 0.0 {
+                gx = GRID_SIZE - gx;
+            }
+            if cur_ay < 0.0 {
+                gy = GRID_SIZE - gy;
+            }
+            dab_inputs.set(BrushInput::GridmapX, gx.clamp(0.0, GRID_SIZE));
+            dab_inputs.set(BrushInput::GridmapY, gy.clamp(0.0, GRID_SIZE));
+
             let dab_sv = evaluate(self, &dab_inputs);
             let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
             state.actual_radius = dab_radius;

@@ -105,13 +105,14 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [x] **`slow_tracking_per_dab`** — lags the dab centre behind the slow-tracked cursor
 - [x] **`opaque_linearize`** — compensates per-dab alpha for overlap
 - [x] **`offset_by_random`** / **`offset_by_speed`** dab position jitter (libmypaint-correct scale)
-- [ ] **`tracking_noise`** — random jitter added to the smoothed pointer position
-- [ ] **`attack`** input — initial pressure ramp at stroke start (currently aliased to `stroke_progress`)
-- [ ] **`stroke_holdtime`** + `stroke_duration_logarithmic` driving the `Stroke` input
-- [ ] **`stroke_threshold`** — suppress dabs below a pressure floor
+- [x] **`tracking_noise`** — gaussian jitter added to the raw input before slow_tracking, scaled by `base_radius`
+- [x] **`attack_angle`** input — smallest angular difference between pen ascension and stroke direction + 90°
+- [x] **`Stroke` input** + `stroke_duration_logarithmic` + `stroke_holdtime` + `stroke_threshold` start/end gating
+- [x] **Gridmap inputs** (`gridmap_x`, `gridmap_y`) sampled from `STATE.ACTUAL_X/Y` via `gridmap_scale[_x/_y]`
+- [x] **Extra inputs** (`tilt_declinationx`, `tilt_declinationy`, `viewzoom`, `barrel_rotation`, `brush_radius`)
 - [ ] **Custom input** — recursive evaluation through `custom_input` / `custom_input_slowness`
-- [ ] **Gridmap inputs** (`gridmap_x`, `gridmap_y`)
-- [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`)
+- [ ] **Direction smoothing** — `direction_filter` low-pass on `STATE.DIRECTION_*` (input curves still see the raw event direction)
+- [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`) — needs the smoothed direction state above
 
 ### Pixel blending
 - [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
