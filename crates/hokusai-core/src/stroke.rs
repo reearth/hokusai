@@ -803,16 +803,43 @@ fn build_dab(
         s: state.actual_s,
         v: state.actual_v,
     });
-    // Mix in smudge bucket (already premultiplied by sampled alpha).
-    let bucket_a = state.smudge_a.max(0.0001);
-    let mix_r = (state.smudge_ra / bucket_a).clamp(0.0, 1.0);
-    let mix_g = (state.smudge_ga / bucket_a).clamp(0.0, 1.0);
-    let mix_b = (state.smudge_ba / bucket_a).clamp(0.0, 1.0);
-    let color = crate::color::RgbaF32 {
-        r: base.r * (1.0 - smudge_amt) + mix_r * smudge_amt,
-        g: base.g * (1.0 - smudge_amt) + mix_g * smudge_amt,
-        b: base.b * (1.0 - smudge_amt) + mix_b * smudge_amt,
-        a: 1.0,
+
+    // libmypaint's `apply_smudge`: when smudge > 0, fold the sampled
+    // canvas colour (stored as `SMUDGE_R/G/B/A` — premultiplied by the
+    // sample alpha during update) into the brush colour, and derive a
+    // dab-level `eraser_target_alpha` from the smudge bucket's alpha so
+    // a smudge into translucent canvas erases proportionally.
+    //
+    //     eraser_target_alpha = (1 - smudge) + smudge * smudge_a
+    //     color_r             = (smudge * SMUDGE_R + (1 - smudge) * brush_r)
+    //                           / eraser_target_alpha   (straight alpha)
+    //
+    // Hokusai used to do a straight linear blend with `mix_r = SMUDGE_R /
+    // smudge_a` and `alpha_eraser = 1 - eraser`, which left smudge brushes
+    // painting fully opaque dabs even when the smudge bucket was nearly
+    // transparent. That's the bulk of the divergence on the blender /
+    // smear / watercolour brushes in the upstream pack.
+    let smudge_amt = smudge_amt.clamp(0.0, 1.0);
+    let eraser_target_alpha =
+        ((1.0 - smudge_amt) + smudge_amt * state.smudge_a).clamp(0.0, 1.0);
+    let color = if smudge_amt <= 0.0 || eraser_target_alpha <= 0.0 {
+        crate::color::RgbaF32 {
+            r: base.r,
+            g: base.g,
+            b: base.b,
+            a: 1.0,
+        }
+    } else {
+        let col_factor = 1.0 - smudge_amt;
+        crate::color::RgbaF32 {
+            r: ((smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha)
+                .clamp(0.0, 1.0),
+            g: ((smudge_amt * state.smudge_ga + col_factor * base.g) / eraser_target_alpha)
+                .clamp(0.0, 1.0),
+            b: ((smudge_amt * state.smudge_ba + col_factor * base.b) / eraser_target_alpha)
+                .clamp(0.0, 1.0),
+            a: 1.0,
+        }
     };
 
     // libmypaint composes the final opacity as opaque * opaque_multiply.
@@ -875,8 +902,15 @@ fn build_dab(
         }
     }
 
+    // libmypaint folds the smudge-derived `eraser_target_alpha` into the
+    // dab's source alpha BEFORE the eraser setting is applied: the
+    // smudge bucket can already be partially transparent, and a smudge
+    // brush is expected to "drag" that transparency along with the
+    // colour. `alpha_eraser` is what the renderer multiplies the
+    // per-pixel mask by, so passing the combined value here gives the
+    // libmypaint blend.
     let eraser = sv.get(BrushSetting::Eraser).clamp(0.0, 1.0);
-    let alpha_eraser = 1.0 - eraser;
+    let alpha_eraser = (eraser_target_alpha * (1.0 - eraser)).clamp(0.0, 1.0);
 
     Dab {
         x: px,
