@@ -1,0 +1,21 @@
+[package]
+name = "hokusai-tiny-skia"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Flatten a hokusai TiledSurface into a tiny-skia Pixmap"
+readme = "../../README.md"
+
+[dependencies]
+hokusai-core = { workspace = true }
+tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+hokusai-tile-mem = { workspace = true }
+hokusai-brush = { workspace = true }
+hokusai-compat = { path = "../hokusai-compat" }

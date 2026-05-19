@@ -13,3 +13,8 @@ pub mod myb {
 pub mod tile_mem {
     pub use hokusai_tile_mem::*;
 }
+
+#[cfg(feature = "tiny-skia")]
+pub mod tiny_skia {
+    pub use hokusai_tiny_skia::*;
+}

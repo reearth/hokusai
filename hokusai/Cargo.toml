@@ -15,11 +15,13 @@ readme = "../README.md"
 default = ["myb-json", "tile-mem"]
 myb-json = ["dep:hokusai-brush"]
 tile-mem = ["dep:hokusai-tile-mem"]
+tiny-skia = ["dep:hokusai-tiny-skia"]
 
 [dependencies]
 hokusai-core = { workspace = true }
 hokusai-brush = { workspace = true, optional = true }
 hokusai-tile-mem = { workspace = true, optional = true }
+hokusai-tiny-skia = { workspace = true, optional = true }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

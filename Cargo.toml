@@ -4,6 +4,7 @@ members = [
     "crates/hokusai-core",
     "crates/hokusai-brush",
     "crates/hokusai-tile-mem",
+    "crates/hokusai-tiny-skia",
     "crates/hokusai-compat",
     "crates/hokusai-wasm",
     "hokusai",
@@ -24,6 +25,7 @@ categories = ["graphics", "rendering", "multimedia::images", "wasm"]
 hokusai-core = { version = "0.0.1", path = "crates/hokusai-core" }
 hokusai-brush = { version = "0.0.1", path = "crates/hokusai-brush" }
 hokusai-tile-mem = { version = "0.0.1", path = "crates/hokusai-tile-mem" }
+hokusai-tiny-skia = { version = "0.0.1", path = "crates/hokusai-tiny-skia" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
