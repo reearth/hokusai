@@ -128,12 +128,130 @@ fn cmd_regenerate(filter: Option<&str>) {
     }
 }
 
+/// Render the current hokusai output for every fixture, then write
+/// `tmp/parity.html` — a side-by-side grid of libmypaint golden, hokusai
+/// actual, and per-fixture MAD. Lets you eyeball the whole parity surface
+/// in one page instead of opening images individually.
+fn cmd_parity_report() {
+    use std::fmt::Write;
+
+    let root = workspace_root();
+    let fixtures = root.join("crates/hokusai-compat/fixtures");
+    let out_dir = root.join("tmp");
+    std::fs::create_dir_all(&out_dir).expect("create tmp dir");
+
+    // Run the snapshot test in update-actual mode by invoking the snapshot
+    // test binary; rendering happens through hokusai_compat::render so the
+    // .actual.png files reflect the current code.
+    eprintln!("rendering current actuals via snapshot test…");
+    let _ = std::process::Command::new("cargo")
+        .args([
+            "test", "-p", "hokusai-compat", "--test", "snapshots",
+            "--", "--quiet",
+        ])
+        .current_dir(&root)
+        .status();
+
+    let mut entries: Vec<_> = std::fs::read_dir(&fixtures)
+        .expect("read fixtures dir")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    entries.sort();
+
+    let mut rows = String::new();
+    for path in &entries {
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        let golden = fixtures.join(format!("{stem}.png"));
+        let actual = fixtures.join(format!("{stem}.actual.png"));
+        let actual_exists = actual.exists();
+        let mad = if actual_exists {
+            compute_mad(&golden, &actual).unwrap_or(f32::NAN)
+        } else {
+            0.0
+        };
+        let status = if !actual_exists {
+            "passing".to_string()
+        } else if mad <= 0.5 {
+            format!("{mad:.2} ≤ 0.50 (passing)")
+        } else {
+            format!("{mad:.2}")
+        };
+        let row_class = if !actual_exists || mad <= 0.5 {
+            "pass"
+        } else if mad <= 5.0 {
+            "warn"
+        } else {
+            "fail"
+        };
+        let actual_src = if actual_exists {
+            format!("../crates/hokusai-compat/fixtures/{stem}.actual.png")
+        } else {
+            format!("../crates/hokusai-compat/fixtures/{stem}.png")
+        };
+        write!(
+            rows,
+            r##"<tr class="{row_class}"><th>{stem}</th>
+<td><img src="../crates/hokusai-compat/fixtures/{stem}.png" alt="golden"></td>
+<td><img src="{actual_src}" alt="actual"></td>
+<td class="mad">{status}</td></tr>
+"##,
+        )
+        .unwrap();
+    }
+
+    let html = format!(
+        r##"<!doctype html>
+<meta charset="utf-8">
+<title>hokusai ↔ libmypaint parity</title>
+<style>
+  body {{ font: 13px/1.4 system-ui, sans-serif; margin: 24px; background: #1b1d22; color: #ddd; }}
+  table {{ border-collapse: collapse; }}
+  th, td {{ padding: 6px 10px; vertical-align: middle; }}
+  th {{ text-align: left; font-weight: 600; min-width: 220px; }}
+  img {{ display: block; image-rendering: pixelated; max-width: 720px; background: #fff; }}
+  tr.pass {{ background: #20302a; }}
+  tr.warn {{ background: #3a3220; }}
+  tr.fail {{ background: #3c2424; }}
+  td.mad {{ font-variant-numeric: tabular-nums; }}
+  h1 {{ margin: 0 0 16px; font-size: 18px; }}
+  .legend {{ margin-bottom: 12px; color: #aaa; }}
+</style>
+<h1>hokusai ↔ libmypaint parity report</h1>
+<p class="legend">Left: libmypaint golden &middot; Right: hokusai current &middot; MAD = mean abs diff per channel (0–255). Green ≤ 0.50, amber ≤ 5, red &gt; 5.</p>
+<table>
+  <thead><tr><th>fixture</th><th>libmypaint</th><th>hokusai</th><th>MAD</th></tr></thead>
+  <tbody>
+{rows}  </tbody>
+</table>
+"##
+    );
+    let out_path = out_dir.join("parity.html");
+    std::fs::write(&out_path, html).expect("write html");
+    println!("wrote {}", out_path.display());
+}
+
+fn compute_mad(a: &std::path::Path, b: &std::path::Path) -> Option<f32> {
+    let ia = image::open(a).ok()?.to_rgba8().into_raw();
+    let ib = image::open(b).ok()?.to_rgba8().into_raw();
+    if ia.len() != ib.len() {
+        return None;
+    }
+    let mut sum = 0u64;
+    for (x, y) in ia.iter().zip(ib.iter()) {
+        sum += x.abs_diff(*y) as u64;
+    }
+    Some(sum as f32 / ia.len() as f32)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("regenerate-goldens") => cmd_regenerate(args.get(1).map(String::as_str)),
+        Some("parity-report") => cmd_parity_report(),
         _ => {
-            eprintln!("usage: cargo xtask regenerate-goldens [pattern]");
+            eprintln!("usage: cargo xtask <regenerate-goldens [pattern] | parity-report>");
             std::process::exit(2);
         }
     }

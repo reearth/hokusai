@@ -61,6 +61,14 @@ impl std::error::Error for RenderError {}
 pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
+    // Symmetric warm-up: the libmypaint C wrapper precedes the script with
+    // a dt > 5s call at the first event's position so STATE.X / .PRESSURE
+    // get seeded before any drawing. Mirror that here so the first script
+    // event renders dabs (with pressure interpolating from 0 → its value)
+    // instead of being consumed as hokusai's own seed.
+    if let Some(first) = script.events.first() {
+        brush.stroke_to(&mut state, &mut surface, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+    }
     for ev in &script.events {
         brush.stroke_to(
             &mut state,
@@ -88,6 +96,9 @@ pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
 pub fn render_with_finish(brush: &Brush, script: &Script) -> Vec<u8> {
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
+    if let Some(first) = script.events.first() {
+        brush.stroke_to(&mut state, &mut surface, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+    }
     for ev in &script.events {
         brush.stroke_to(
             &mut state,
