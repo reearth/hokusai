@@ -925,7 +925,14 @@ fn build_dab(
         lock_alpha: sv.get(BrushSetting::LockAlpha).clamp(0.0, 1.0),
         colorize: sv.get(BrushSetting::Colorize).clamp(0.0, 1.0),
         posterize: sv.get(BrushSetting::Posterize).clamp(0.0, 1.0),
-        posterize_num: sv.get(BrushSetting::PosterizeNum).max(1.0),
+        // libmypaint's `prepare_and_draw_dab` scales by 100 and clamps to
+        // `[1, 128]` before handing the value to the posterize blend, so
+        // the `.myb` setting `posterize_num = 0.02` (Posterizer) becomes a
+        // 2-step quantisation rather than the 1-step degenerate hokusai
+        // used to compute via `max(1.0)`.
+        posterize_num: (sv.get(BrushSetting::PosterizeNum) * 100.0)
+            .round()
+            .clamp(1.0, 128.0),
         paint: sv.get(BrushSetting::Paint).clamp(0.0, 1.0),
         // AA has been baked into `radius` and `hardness` above.
         anti_aliasing: 0.0,

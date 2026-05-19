@@ -177,8 +177,37 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
             } else {
                 false
             };
+            // Pass 3: posterize. libmypaint runs this as a fourth blend
+            // mode AFTER normal+paint (and colorize), operating on the
+            // already-blended canvas. Pass 1's per-pixel loop short-
+            // circuits when its scaled opacity is zero (e.g. paint_mode=1
+            // brushes), so posterize would otherwise never run on those.
+            let touched_post = if dab.posterize > 0.0 {
+                posterize_pass_into_tile(
+                    tile,
+                    ox,
+                    oy,
+                    lx0,
+                    ly0,
+                    lx1,
+                    ly1,
+                    dab.x,
+                    dab.y,
+                    aspect,
+                    cs,
+                    sn,
+                    inv_r2,
+                    hardness,
+                    opaque_f,
+                    aa_band,
+                    dab.posterize.clamp(0.0, 1.0),
+                    dab.posterize_num.max(1.0),
+                )
+            } else {
+                false
+            };
             surface.tile_request_end(tx, ty);
-            painted |= touched | touched_paint;
+            painted |= touched | touched_paint | touched_post;
         }
     }
     painted
@@ -214,9 +243,7 @@ fn paint_into_tile(
 ) -> bool {
     let mut painted = false;
     let aa_edge = 1.0 + aa_band;
-    let do_posterize = posterize > 0.0;
-    let pnum = posterize_num.round().max(1.0);
-    let posterize_fix15 = (posterize * FIX15_ONE as f32) as u32;
+    let _ = (posterize, posterize_num); // handled by posterize_pass_into_tile.
 
     for ly in ly0..=ly1 {
         let py = (oy + ly as i32) as f32;
@@ -281,14 +308,8 @@ fn paint_into_tile(
                 dst[3] = blend(da, inv_mask, FIX15_ONE, opa_alpha_raw);
             }
 
-            // Posterize: snap each channel toward (round(c * N) / N) by
-            // `posterize` amount. Applied in straight alpha — convert,
-            // quantize, convert back.
-            if do_posterize {
-                posterize_pixel(dst, pnum, posterize_fix15);
-                painted = true;
-                continue;
-            }
+            // (Posterize is its own pass now — see `posterize_pass_into_tile`
+            // called from `draw_dab_default` after the paint pass.)
             painted = true;
         }
     }
@@ -330,19 +351,22 @@ fn colorize_pixel(pixel: &mut [u16; 4], src_color: RgbaF32, mask: u32, amount: f
 }
 
 /// Posterize `pixel` toward `pnum` quantization levels by `amount` (fix15).
+/// Matches libmypaint's `draw_dab_pixels_BlendMode_Posterize`: works on
+/// the premultiplied channel values directly (no un-premul / re-premul
+/// round-trip), so it leaves the alpha channel alone.
 fn posterize_pixel(pixel: &mut [u16; 4], pnum: f32, amount: u32) {
-    let a = pixel[3] as f32 / FIX15_ONE as f32;
-    if a <= 0.0 {
+    if amount == 0 {
         return;
     }
+    let inv_amount = FIX15_ONE - amount;
     for ch in 0..3 {
         let c_premul = pixel[ch] as f32 / FIX15_ONE as f32;
-        let c_straight = (c_premul / a).clamp(0.0, 1.0);
-        let q = (c_straight * pnum).round() / pnum;
-        let blended = c_straight * (1.0 - amount as f32 / FIX15_ONE as f32)
-            + q * (amount as f32 / FIX15_ONE as f32);
-        let new_premul = (blended * a).clamp(0.0, 1.0);
-        pixel[ch] = (new_premul * FIX15_ONE as f32) as u16;
+        // libmypaint quantises the premultiplied value directly.
+        let post = (c_premul * pnum).round() / pnum;
+        let post_fix15 = (post.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
+        let dst = pixel[ch] as u32;
+        let blended = (amount * post_fix15 + inv_amount * dst) >> 15;
+        pixel[ch] = blended.min(FIX15_ONE) as u16;
     }
 }
 
@@ -458,6 +482,67 @@ fn paint_blend_into_tile(
             dst[1] = (new_g.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
             dst[2] = (new_b.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
             dst[3] = (opa_out.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
+            painted = true;
+        }
+    }
+    painted
+}
+
+/// Posterize as a standalone pass over the dab's footprint. Mirrors
+/// libmypaint's `draw_dab_pixels_BlendMode_Posterize`, which runs after
+/// the normal + paint + colorize passes (and is gated only on
+/// `dab.posterize > 0`, not on the normal pass's scaled opacity).
+#[allow(clippy::too_many_arguments)]
+fn posterize_pass_into_tile(
+    tile: &mut TilePixels,
+    ox: i32,
+    oy: i32,
+    lx0: usize,
+    ly0: usize,
+    lx1: usize,
+    ly1: usize,
+    cx: f32,
+    cy: f32,
+    aspect: f32,
+    cs: f32,
+    sn: f32,
+    inv_r2: f32,
+    hardness: f32,
+    opaque: f32,
+    aa_band: f32,
+    posterize: f32,
+    posterize_num: f32,
+) -> bool {
+    let mut painted = false;
+    let aa_edge = 1.0 + aa_band;
+    let pnum = posterize_num.round().max(1.0);
+    let post_amount_fix15 = (posterize.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
+    for ly in ly0..=ly1 {
+        let py = (oy + ly as i32) as f32;
+        for lx in lx0..=lx1 {
+            let px = (ox + lx as i32) as f32;
+            let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
+            if rr >= aa_edge {
+                continue;
+            }
+            let mut opa = if aa_band > 0.0 {
+                opa_at(rr / aa_edge, hardness)
+            } else if rr <= 1.0 {
+                opa_at(rr, hardness)
+            } else {
+                0.0
+            };
+            opa *= opaque;
+            if opa <= 0.0 {
+                continue;
+            }
+            // libmypaint multiplies `posterize` by the dab mask. We
+            // scale `post_amount_fix15` by the per-pixel `opa` so the
+            // quantisation strength fades with the dab edge, matching
+            // `draw_dab_pixels_BlendMode_Posterize(... opacity * (1<<15) ...)`.
+            let mask = (opa.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
+            let scaled = ((post_amount_fix15 as u64 * mask as u64) >> 15) as u32;
+            posterize_pixel(&mut tile[ly][lx], pnum, scaled);
             painted = true;
         }
     }
