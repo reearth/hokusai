@@ -175,6 +175,19 @@ impl Brush {
         let radius = sv.get(BrushSetting::Radius).exp().max(0.1);
         state.actual_radius = radius;
 
+        // For the dab-count step we need the radius at the *start* of this
+        // segment (libmypaint advances `STATE.ACTUAL_RADIUS` step-by-step
+        // inside its inner loop and recomputes `count_dabs_to` against the
+        // updated value — using the end-of-event radius here significantly
+        // undercounts when radius is growing). Re-evaluate the radius input
+        // with `entry_pressure` so we start the count from the same place.
+        let entry_radius = {
+            let mut entry_inputs = inputs.clone();
+            entry_inputs.set(BrushInput::Pressure, entry_pressure);
+            let entry_sv = evaluate(self, &entry_inputs);
+            entry_sv.get(BrushSetting::Radius).exp().max(0.1)
+        };
+
         // --- Slow tracking: advance smoothed position toward the event ------
         // libmypaint applies an exponential moving average with time
         // constant `0.01 * slow_tracking` seconds (the `0.01` makes the
@@ -233,8 +246,13 @@ impl Brush {
         // `radius * 2.0` here (as a previous revision did) halved the dab
         // count, producing visible gaps in libmypaint-thin brushes once the
         // tilt_declination fix made radii small enough to expose them.
-        let dist_dabs = if radius > 0.0 {
-            dist * (dpar + dpbr) * elongation / radius
+        // Use the entry-pressure radius here, mirroring libmypaint's first
+        // `count_dabs_to` call (which sees STATE.ACTUAL_RADIUS before any
+        // step has advanced it). Without this, pressure ramps that grow the
+        // radius across the segment emit too few dabs because the
+        // event-final radius is bigger than the path actually deserves.
+        let dist_dabs = if entry_radius > 0.0 {
+            dist * (dpar + dpbr) * elongation / entry_radius
         } else {
             0.0
         };
@@ -476,10 +494,15 @@ fn build_dab(
     // libmypaint/mypaint-brush.c `prepare_and_draw_dab`.
     let aa_min = sv.get(BrushSetting::AntiAliasing).max(0.0);
     let current_fadeout = radius * (1.0 - hardness);
-    if aa_min > current_fadeout && hardness < 1.0 || (aa_min > 0.0 && hardness >= 1.0) {
+    if current_fadeout < aa_min {
         let optical = radius - (1.0 - hardness) * radius * 0.5;
         let hardness_new = (optical - aa_min * 0.5) / (optical + aa_min * 0.5);
-        if hardness_new > 0.0 && hardness_new < 1.0 {
+        // libmypaint applies the result unconditionally; sub-pixel dabs end
+        // up with negative hardness, which `draw_dab_default` rejects to
+        // match the upstream `op->hardness == 0` early-out. We only guard
+        // against `hardness_new == 1` here to avoid div-by-zero on the
+        // radius assignment.
+        if hardness_new < 1.0 {
             radius = aa_min / (1.0 - hardness_new);
             hardness = hardness_new;
         }

@@ -59,6 +59,14 @@ fn rr_at(px: f32, py: f32, x: f32, y: f32, aspect: f32, cs: f32, sn: f32, inv_r2
 ///
 /// This is the function `TiledSurface::draw_dab` defaults to.
 pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) -> bool {
+    // libmypaint's draw_dab_internal rejects degenerate dabs outright —
+    // mirror that so low-pressure ramps don't lay down a sub-pixel "smear"
+    // hokusai used to render as a linear falloff. Without the hardness ≤ 0
+    // check, AA pushes the brush into a regime libmypaint treats as a
+    // no-op.
+    if dab.radius < 0.1 || dab.hardness <= 0.0 || dab.opaque <= 0.0 {
+        return false;
+    }
     let radius = dab.radius.max(0.5);
     let aspect = dab.aspect_ratio.max(1.0);
     let angle = dab.angle.to_radians();
