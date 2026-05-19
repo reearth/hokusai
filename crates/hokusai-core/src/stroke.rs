@@ -368,7 +368,15 @@ impl Brush {
         let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
         let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
         let smudge_radius_log = sv.get(BrushSetting::SmudgeRadiusLog);
-        let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
+        // libmypaint's `if (offset_by_random)` consumes 2 PRNG draws on
+        // ANY non-zero setting (curve-evaluated), then clamps the
+        // amplitude with `MAX(0, ...)`. Hokusai used to gate the whole
+        // block on `> 0`, so brushes whose pressure / custom curve pulled
+        // the value below zero on some dabs (Posterizer, several scatter
+        // brushes) silently lost two `next_gauss` consumptions vs the
+        // libmypaint reference and the RNG sequences then diverged.
+        let off_random_raw = sv.get(BrushSetting::OffsetByRandom);
+        let off_random = off_random_raw.max(0.0);
         let off_speed = sv.get(BrushSetting::OffsetBySpeed);
 
         // Running state for the inner loop. `cur_*` advances toward the
@@ -658,7 +666,10 @@ impl Brush {
             px += off_x;
             py += off_y;
 
-            if off_random > 0.0 {
+            // Truthy check matches libmypaint — any non-zero curve value
+            // burns 2 PRNG draws so the sequence stays in lock-step even
+            // when the curve dips negative (where amplitude clamps to 0).
+            if off_random_raw != 0.0 {
                 px += state.rng.next_gauss() * off_random * base_radius;
                 py += state.rng.next_gauss() * off_random * base_radius;
             }
@@ -669,9 +680,11 @@ impl Brush {
             // is bigger so the perceived ink density stays even. Consumes
             // one PRNG draw — placed *after* `offset_by_random` to keep
             // the consumption order aligned with `prepare_and_draw_dab`.
+            // Same truthy gating as offset_by_random above.
             let mut dab_opaque_scale = 1.0_f32;
-            let rad_random = dab_sv.get(BrushSetting::RadiusByRandom).max(0.0);
-            if rad_random > 1e-3 {
+            let rad_random_raw = dab_sv.get(BrushSetting::RadiusByRandom);
+            let rad_random = rad_random_raw.max(0.0);
+            if rad_random_raw != 0.0 {
                 let noise = state.rng.next_gauss() * rad_random;
                 let new_log = dab_sv.get(BrushSetting::Radius) + noise;
                 let new_radius = new_log.exp().clamp(0.2, 1000.0);
