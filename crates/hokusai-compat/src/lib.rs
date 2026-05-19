@@ -73,6 +73,9 @@ pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
             ev[3] as f64,
         );
     }
+    // Flush slow_tracking lag so the stroke's trailing pixels are painted —
+    // applications do the same on pointer-up.
+    brush.finish_stroke(&mut state, &mut surface);
     flatten(&surface, script.width, script.height)
 }
 

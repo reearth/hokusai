@@ -130,6 +130,10 @@
     });
     canvasEl.addEventListener("pointerup", e => {
       drawing = false;
+      // Paint the trailing pixels that slow_tracking lag would otherwise
+      // leave unrendered.
+      canvas.finishStroke(brush);
+      flush();
       canvasEl.releasePointerCapture(e.pointerId);
     });
 

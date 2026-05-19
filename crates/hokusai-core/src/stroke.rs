@@ -40,6 +40,7 @@ impl Brush {
         dtime: f64,
     ) -> bool {
         let pressure = pressure.clamp(0.0, 1.0);
+        state.last_pressure = pressure;
 
         // --- Fresh stroke: seed state, no dabs ------------------------------
         if !state.started || dtime >= 5.0 {
@@ -130,13 +131,13 @@ impl Brush {
         state.actual_radius = radius;
 
         // --- Slow tracking: advance smoothed position toward the event ------
-        // libmypaint's `slow_tracking` is an exponential time constant in
-        // frames at 60 Hz, *not* a [0, 1] coefficient. Real brushes set it
-        // well above 1 (brush.myb uses 4.47), so clamping to 1 froze them.
-        // Formula: fac = exp(-dt * 60 / slow), approach = 1 - fac.
+        // libmypaint applies an exponential moving average with time
+        // constant `0.01 * slow_tracking` seconds (the `0.01` makes the
+        // setting's "displayed range" of 0–10 cover ~0–100 ms of lag).
+        // Formula: approach = 1 - exp(-dt / (0.01 * slow)).
         let slow = sv.get(BrushSetting::SlowTracking).max(0.0);
         let approach = if slow > 1e-3 {
-            1.0 - (-dt * 60.0 / slow).exp()
+            1.0 - (-dt / (0.01 * slow)).exp()
         } else {
             1.0
         };
@@ -250,6 +251,49 @@ impl Brush {
             state.stroke_current_idling_time += dtime;
         }
 
+        painted
+    }
+
+    /// Flush `slow_tracking` lag and paint the trailing pixels.
+    ///
+    /// Call this on pointer-up. The smoothed position lags behind the live
+    /// cursor by up to `velocity * τ` pixels (where `τ ≈ 0.01 * slow_tracking`
+    /// seconds). Without flushing, that trail is left unpainted — so a
+    /// stroke ending at x=660 would only have paint up to x≈645 for a brush
+    /// with `slow_tracking=3` at 500 px/s.
+    ///
+    /// Pumps a handful of small idle events at the last cursor position so
+    /// the smoothed position catches up. Returns `true` if any pixel was
+    /// painted.
+    pub fn finish_stroke<S: TiledSurface>(&self, state: &mut BrushState, surface: &mut S) -> bool {
+        if !state.started {
+            return false;
+        }
+        let mut painted = false;
+        // Up to 8 × 16 ms ≈ 130 ms of catch-up. With τ ≤ 100 ms (slow ≤ 10)
+        // that's ≥ 1 time constant, leaving < 37 % residual lag; for typical
+        // brushes (slow ≤ 5) it's ≥ 2.5 τ and < 8 %. Pressure is held at the
+        // last received value so brushes whose `opaque` is pressure-driven
+        // keep painting along the trailing segment.
+        let p = state.last_pressure;
+        for _ in 0..8 {
+            painted |= self.stroke_to(
+                state,
+                surface,
+                state.last_event_x,
+                state.last_event_y,
+                p,
+                0.0,
+                0.0,
+                0.016,
+            );
+            let lag = ((state.last_event_x - state.actual_x).powi(2)
+                + (state.last_event_y - state.actual_y).powi(2))
+            .sqrt();
+            if lag < 0.5 {
+                break;
+            }
+        }
         painted
     }
 }

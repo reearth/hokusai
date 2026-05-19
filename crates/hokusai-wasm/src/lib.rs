@@ -92,6 +92,15 @@ impl HokusaiCanvas {
         }
     }
 
+    /// Flush `slow_tracking` lag so the stroke's trailing pixels are painted.
+    /// Call on pointer-up *before* resetting.
+    #[wasm_bindgen(js_name = finishStroke)]
+    pub fn finish_stroke(&mut self, brush: &HokusaiBrush) {
+        brush
+            .inner
+            .finish_stroke(&mut self.state, &mut self.surface);
+    }
+
     /// End the current stroke so the next `strokeTo` starts fresh.
     #[wasm_bindgen(js_name = resetStroke)]
     pub fn reset_stroke(&mut self) {

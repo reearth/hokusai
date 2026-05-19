@@ -47,6 +47,11 @@ pub struct BrushState {
 
     pub rng: BrushRng,
 
+    /// Pressure of the most recent stroke event. Used by `finish_stroke` to
+    /// keep the trailing catch-up dabs at the same ink density the user was
+    /// drawing with, rather than painting nothing at pressure=0.
+    pub last_pressure: f32,
+
     /// `false` until the first `stroke_to` has been processed. While `false`,
     /// `stroke_to` only seeds the position; no dabs are emitted. Mirrors
     /// libmypaint's "fresh stroke" handling.
@@ -80,6 +85,7 @@ impl BrushState {
             smudge_ba: 0.0,
             smudge_a: 0.0,
             rng: BrushRng::new(seed),
+            last_pressure: 0.0,
             started: false,
         }
     }
