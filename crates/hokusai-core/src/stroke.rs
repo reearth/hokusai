@@ -1173,6 +1173,30 @@ fn build_dab(
         }
     }
 
+    // libmypaint's `snap_to_pixel`: pull the dab centre toward
+    // (floor(x)+0.5, floor(y)+0.5) and quantise the radius to half-pixels
+    // by the snap fraction. At snap=1.0 the dab lands exactly on a pixel
+    // centre with a radius that doesn't bleed into a 4th neighbour.
+    let mut px = px;
+    let mut py = py;
+    let snap = sv.get(BrushSetting::SnapToPixel).clamp(0.0, 1.0);
+    if snap > 0.0 {
+        let snapped_x = px.floor() + 0.5;
+        let snapped_y = py.floor() + 0.5;
+        px += (snapped_x - px) * snap;
+        py += (snapped_y - py) * snap;
+        let mut snapped_radius = (radius * 2.0).round() * 0.5;
+        if snapped_radius < 0.5 {
+            snapped_radius = 0.5;
+        }
+        if snap > 0.9999 {
+            // libmypaint sheds a hair off the quantised radius so the
+            // mask doesn't touch the 4th neighbour pixel through fp slop.
+            snapped_radius -= 0.0001;
+        }
+        radius += (snapped_radius - radius) * snap;
+    }
+
     // libmypaint folds the smudge-derived `eraser_target_alpha` into the
     // dab's source alpha BEFORE the eraser setting is applied: the
     // smudge bucket can already be partially transparent, and a smudge
