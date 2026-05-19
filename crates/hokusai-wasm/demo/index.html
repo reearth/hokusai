@@ -7,7 +7,9 @@
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { margin: 0; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; align-items: center; }
-    h1 { margin: 0; font-size: 1.25rem; }
+    h1 { margin: 0; font-size: 1.25rem; display: flex; align-items: center; gap: 0.6rem; }
+    h1 a { font-size: 0.85rem; font-weight: normal; opacity: 0.7; text-decoration: none; }
+    h1 a:hover { opacity: 1; }
     canvas { border: 1px solid #aaa; touch-action: none; background: white; cursor: crosshair; }
     .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     label { display: flex; gap: 0.35rem; align-items: center; font-size: 0.85rem; }
@@ -18,7 +20,10 @@
   </style>
 </head>
 <body>
-  <h1>Hokusai brush demo</h1>
+  <h1>
+    Hokusai brush demo
+    <a href="https://github.com/reearth/hokusai" target="_blank" rel="noopener">→ GitHub</a>
+  </h1>
   <div class="controls">
     <label>Brush
       <select id="brush"></select>
@@ -27,7 +32,7 @@
       <input type="color" id="color" value="#202020" />
     </label>
     <label>Size (log₂)
-      <input type="range" id="size" min="-1" max="4" step="0.1" value="1.5" />
+      <input type="range" id="size" min="-1" max="4" step="0.1" value="2.5" />
     </label>
     <button id="clear">Clear</button>
   </div>
@@ -104,35 +109,47 @@
     let lastT = 0;
     canvasEl.addEventListener("pointerdown", e => {
       drawing = true;
-      lastT = performance.now();
+      lastT = e.timeStamp || performance.now();
       canvas.resetStroke();
-      sendEvent(e);
+      sendOne(e, e);
+      flush();
       canvasEl.setPointerCapture(e.pointerId);
     });
     canvasEl.addEventListener("pointermove", e => {
       if (!drawing) return;
-      sendEvent(e);
+      // Modern browsers buffer multiple sub-events between pointermove
+      // dispatches; replay them all so fast strokes don't get aliased
+      // into a few sparse events.
+      const subs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+      if (subs.length > 0) {
+        for (const sub of subs) sendOne(sub, e);
+      } else {
+        sendOne(e, e);
+      }
+      flush();
     });
     canvasEl.addEventListener("pointerup", e => {
       drawing = false;
       canvasEl.releasePointerCapture(e.pointerId);
     });
 
-    function sendEvent(e) {
+    function sendOne(ev, original) {
       const rect = canvasEl.getBoundingClientRect();
-      const x = (e.clientX - rect.left) * (canvasEl.width  / rect.width);
-      const y = (e.clientY - rect.top)  * (canvasEl.height / rect.height);
-      const p = e.pressure > 0 ? e.pressure : 0.5; // mouse → fixed 0.5
+      const x = (ev.clientX - rect.left) * (canvasEl.width  / rect.width);
+      const y = (ev.clientY - rect.top)  * (canvasEl.height / rect.height);
+      // Pen → use real pressure. Mouse / touch with no pressure sensor →
+      // treat each event as a full press so the brush actually shows up.
+      const isPen = (original.pointerType || ev.pointerType) === "pen";
+      const p = isPen ? (ev.pressure > 0 ? ev.pressure : 1.0) : 1.0;
       // PointerEvent.tiltX/Y are in degrees [-90, 90]; libmypaint expects
       // a unit-vector-style [-1, 1]. Use sin(tilt°) so a horizontal pen
       // (90°) maps to magnitude 1.
-      const xtilt = Math.sin((e.tiltX || 0) * Math.PI / 180);
-      const ytilt = Math.sin((e.tiltY || 0) * Math.PI / 180);
-      const now = performance.now();
+      const xtilt = Math.sin((ev.tiltX || 0) * Math.PI / 180);
+      const ytilt = Math.sin((ev.tiltY || 0) * Math.PI / 180);
+      const now = ev.timeStamp || performance.now();
       const dt = Math.max(0.001, (now - lastT) / 1000);
       lastT = now;
       canvas.strokeTo(brush, x, y, p, xtilt, ytilt, dt);
-      flush();
     }
 
     function flush() {

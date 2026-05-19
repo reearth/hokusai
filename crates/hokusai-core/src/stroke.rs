@@ -213,7 +213,7 @@ impl Brush {
                 // Color drift between dabs (change_color_*).
                 drift_color(state, &sv, dt_per_dab);
 
-                let dab = build_dab(&sv, state, px, py, smudge_amt);
+                let dab = build_dab(self, &sv, state, px, py, smudge_amt);
                 if surface.draw_dab(&dab) {
                     painted = true;
                 }
@@ -272,7 +272,26 @@ fn drift_color(state: &mut BrushState, sv: &SettingValues, dt_per_dab: f32) {
     }
 }
 
-fn build_dab(sv: &SettingValues, state: &BrushState, px: f32, py: f32, smudge_amt: f32) -> Dab {
+/// Returns the effective `opaque_multiply` factor. When the brush leaves
+/// the setting wholly at defaults (base 0, no inputs) we use 1.0 so the
+/// final opacity matches libmypaint's default behaviour rather than
+/// zeroing out every dab.
+fn opaque_multiplier(brush: &Brush, sv: &SettingValues) -> f32 {
+    let setting = brush.get(BrushSetting::OpaqueMultiply);
+    if setting.base_value == 0.0 && setting.inputs.is_empty() {
+        return 1.0;
+    }
+    sv.get(BrushSetting::OpaqueMultiply).clamp(0.0, 1.0)
+}
+
+fn build_dab(
+    brush: &Brush,
+    sv: &SettingValues,
+    state: &BrushState,
+    px: f32,
+    py: f32,
+    smudge_amt: f32,
+) -> Dab {
     // Base color from the (drifted) HSV state.
     let base = hsv_to_rgb(Hsv {
         h: state.actual_h,
@@ -291,7 +310,16 @@ fn build_dab(sv: &SettingValues, state: &BrushState, px: f32, py: f32, smudge_am
         a: 1.0,
     };
 
-    let opaque = sv.get(BrushSetting::Opaque).clamp(0.0, 2.0);
+    // libmypaint composes the final opacity as opaque * opaque_multiply.
+    // Many stock brushes (charcoal, pencil, …) drive opaque_multiply from
+    // pressure, so skipping it makes them look wrong at non-full pressure.
+    // libmypaint defaults opaque_multiply to 1.0; treat a wholly-default
+    // setting (no base value and no input curves) as that identity.
+    let opaque_raw = sv.get(BrushSetting::Opaque).clamp(0.0, 2.0);
+    let opaque_mult = opaque_multiplier(brush, sv);
+    let opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
+    // TODO: opaque_linearize as a gamma-style adjustment on the result.
+
     let hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
     let eraser = sv.get(BrushSetting::Eraser).clamp(0.0, 1.0);
     let alpha_eraser = 1.0 - eraser;
