@@ -27,6 +27,29 @@ pub struct BrushState {
     pub norm_dy_slow: f32,
     pub norm_speed1_slow: f32,
     pub norm_speed2_slow: f32,
+    /// Smoothed motion vector with 180° symmetry — libmypaint
+    /// `STATE.DIRECTION_DX/DY`. Feeds `INPUT(DIRECTION)` which is
+    /// mapped to `[0, 180)`. The 180° fold is done at update time:
+    /// libmypaint picks the closest of `±(step_dx, step_dy)` so a
+    /// stroke that flips back along itself doesn't oscillate.
+    pub direction_dx: f32,
+    pub direction_dy: f32,
+    /// Smoothed motion vector without symmetry — libmypaint
+    /// `STATE.DIRECTION_ANGLE_DX/DY`. Feeds `INPUT(DIRECTION_ANGLE)`
+    /// (`[0, 360)`).
+    pub direction_angle_dx: f32,
+    pub direction_angle_dy: f32,
+    /// libmypaint's `STATE.CUSTOM_INPUT` — the smoothed value of
+    /// `SETTING(CUSTOM_INPUT)` with time constant `CUSTOM_INPUT_SLOWNESS`.
+    /// Feeds `INPUT(CUSTOM)` so a brush can chain a curve's output back
+    /// in as a (lagged) input on the next dab.
+    pub custom_input: f32,
+    /// libmypaint's `STATE.FLIP`: alternates `+1.0` / `-1.0` per dab so
+    /// the `offset_angle_2*` settings can mirror the dab back and forth
+    /// across the stroke direction (used by stamping / scatter brushes).
+    /// `brush_reset` initialises it to `-1` so the first dab toggles to
+    /// `+1` — matching the upstream comment.
+    pub flip: f32,
 
     // Stroke accounting.
     pub stroke_total_painting_time: f64,
@@ -95,6 +118,12 @@ impl BrushState {
             norm_dy_slow: 0.0,
             norm_speed1_slow: 0.0,
             norm_speed2_slow: 0.0,
+            direction_dx: 0.0,
+            direction_dy: 0.0,
+            direction_angle_dx: 0.0,
+            direction_angle_dy: 0.0,
+            custom_input: 0.0,
+            flip: -1.0,
             stroke_total_painting_time: 0.0,
             stroke_current_idling_time: 0.0,
             stroke_state: 0.0,

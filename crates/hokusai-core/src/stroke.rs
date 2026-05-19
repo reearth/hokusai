@@ -272,9 +272,9 @@ impl Brush {
         let new_actual_x = prev_actual_x + (noisy_x - prev_actual_x) * approach;
         let new_actual_y = prev_actual_y + (noisy_y - prev_actual_y) * approach;
 
-        let dx = new_actual_x - prev_actual_x;
-        let dy = new_actual_y - prev_actual_y;
-        let dist = (dx * dx + dy * dy).sqrt();
+        // The segment delta after smoothing — used by the dab loop and
+        // count_dabs_to. We don't need the magnitude here directly.
+        let _ = (new_actual_x - prev_actual_x, new_actual_y - prev_actual_y);
 
         // (Historically hokusai gated dab emission on `stroke_threshold`,
         // but libmypaint does not — that setting only drives the
@@ -301,13 +301,7 @@ impl Brush {
         let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
         let smudge_radius_log = sv.get(BrushSetting::SmudgeRadiusLog);
         let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
-        let off_speed = sv.get(BrushSetting::OffsetBySpeed).max(0.0);
-        // Unit vector along motion, used by offset_by_speed.
-        let (ux, uy) = if dist > 1e-6 {
-            (dx / dist, dy / dist)
-        } else {
-            (0.0, 0.0)
-        };
+        let off_speed = sv.get(BrushSetting::OffsetBySpeed);
 
         // Running state for the inner loop. `cur_*` advances toward the
         // event's smoothed target one step at a time; libmypaint commits
@@ -384,6 +378,60 @@ impl Brush {
             state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
             state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
 
+            // libmypaint also smooths the *vector* velocity (NORM_DX_SLOW /
+            // NORM_DY_SLOW) with its own time constant — used by
+            // `offset_by_speed` to push the dab along the actual motion
+            // direction, including sign. `time_constant = exp(slow * 0.01) - 1`
+            // with a 0.002 floor (a long-standing libmypaint workaround for
+            // a Windows-only zero-filtering bug).
+            let speed_off_slow = sv.get(BrushSetting::OffsetBySpeedSlowness);
+            let speed_off_tc = ((speed_off_slow * 0.01).exp() - 1.0).max(0.002);
+            let fac_dx = if step_dtime > 0.0 {
+                1.0 - (-step_dtime / speed_off_tc).exp()
+            } else {
+                1.0
+            };
+            // norm_dx = step_dx / step_dtime (with viewzoom = 1)
+            if step_dtime > 0.0 {
+                let norm_dx = step_dx / step_dtime;
+                let norm_dy = step_dy / step_dtime;
+                state.norm_dx_slow += (norm_dx - state.norm_dx_slow) * fac_dx;
+                state.norm_dy_slow += (norm_dy - state.norm_dy_slow) * fac_dx;
+            }
+
+            // Direction filter: libmypaint smooths two direction vectors
+            // here, both gated on `direction_filter`. The smoothing
+            // strength uses `step_in_dabtime = hypot(step_dx, step_dy)`
+            // so a wider step pulls the smoothed direction further along
+            // toward the current motion. DIRECTION_DX/DY is 180°-folded
+            // (so back-and-forth strokes don't flip the input), while
+            // DIRECTION_ANGLE_DX/DY tracks the full 360°.
+            let dir_filter = sv.get(BrushSetting::DirectionFilter).max(0.0);
+            let dir_time_const = (dir_filter * 0.5).exp() - 1.0;
+            let step_in_dabtime = (step_dx * step_dx + step_dy * step_dy).sqrt();
+            let dir_fac = if dir_time_const > 1e-3 {
+                1.0 - (-step_in_dabtime / dir_time_const).exp()
+            } else {
+                1.0
+            };
+            // 360° tracker first (uses the raw step vector).
+            state.direction_angle_dx += (step_dx - state.direction_angle_dx) * dir_fac;
+            state.direction_angle_dy += (step_dy - state.direction_angle_dy) * dir_fac;
+            // 180°-folded tracker: pick the closer of ±(step_dx, step_dy)
+            // to the previous direction so the smoothed vector doesn't
+            // oscillate when the stroke reverses.
+            let (mut dx_for_dir, mut dy_for_dir) = (step_dx, step_dy);
+            let dx_old = state.direction_dx;
+            let dy_old = state.direction_dy;
+            let pos_dist = (dx_old - dx_for_dir).powi(2) + (dy_old - dy_for_dir).powi(2);
+            let neg_dist = (dx_old + dx_for_dir).powi(2) + (dy_old + dy_for_dir).powi(2);
+            if pos_dist > neg_dist {
+                dx_for_dir = -dx_for_dir;
+                dy_for_dir = -dy_for_dir;
+            }
+            state.direction_dx += (dx_for_dir - state.direction_dx) * dir_fac;
+            state.direction_dy += (dy_for_dir - state.direction_dy) * dir_fac;
+
             // Advance STATE.STROKE by this step's normalised distance.
             // `norm_dist = |step| / base_radius`; libmypaint uses this for
             // the distance contribution so a brush with a larger base radius
@@ -423,6 +471,23 @@ impl Brush {
                 ),
             );
             dab_inputs.set(BrushInput::Random, state.random_input);
+            // Custom input: feed the previous-dab smoothed value so the
+            // curve in `evaluate` below can reference it (libmypaint pushes
+            // the *prior* STATE.CUSTOM_INPUT into INPUT(CUSTOM) and only
+            // refreshes the state after the dab is drawn — see the
+            // `STATE.CUSTOM_INPUT += ...` block right below).
+            dab_inputs.set(BrushInput::Custom, state.custom_input);
+            // Smoothed direction inputs (per libmypaint's DIRECTION_DX/DY
+            // and DIRECTION_ANGLE_DX/DY) — replace the event-level raw
+            // direction we seeded `inputs` with.
+            dab_inputs.set(
+                BrushInput::Direction,
+                direction_input(state.direction_dx, state.direction_dy),
+            );
+            dab_inputs.set(
+                BrushInput::DirectionAngle,
+                direction_angle(state.direction_angle_dx, state.direction_angle_dy),
+            );
 
             // libmypaint computes GRIDMAP_X / GRIDMAP_Y from the (lagged)
             // dab centre, scaled by `exp(GRIDMAP_SCALE)` and the per-axis
@@ -459,16 +524,52 @@ impl Brush {
             let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
             state.actual_radius = dab_radius;
 
+            // Refresh STATE.CUSTOM_INPUT toward the freshly evaluated
+            // SETTING(custom_input). libmypaint uses a fixed `0.1`
+            // pseudo-`dt` here (the slowness is measured in "10× longer is
+            // 10× slower"), so the smoothing strength doesn't depend on
+            // the per-dab step time.
+            let cust_slow = dab_sv.get(BrushSetting::CustomInputSlowness).max(0.0);
+            let cust_fac = if cust_slow > 1e-3 {
+                1.0 - (-0.1 / cust_slow).exp()
+            } else {
+                1.0
+            };
+            let cust_target = dab_sv.get(BrushSetting::CustomInput);
+            state.custom_input += (cust_target - state.custom_input) * cust_fac;
+
             let mut px = cur_ax;
             let mut py = cur_ay;
+
+            // Toggle libmypaint's `STATE.FLIP` so `offset_angle_2*` can
+            // mirror dabs across the stroke direction. Done *before* the
+            // offsets so this dab gets the freshly toggled sign.
+            state.flip = -state.flip;
+            let (off_x, off_y) = directional_offsets(
+                &dab_sv,
+                base_radius,
+                state.flip,
+                state.direction_angle_dx,
+                state.direction_angle_dy,
+                // ASCENSION isn't tracked per-dab yet (libmypaint smooths
+                // it like position); use the event-level tilt_ascension
+                // we already computed.
+                tilt_ascension,
+            );
+            px += off_x;
+            py += off_y;
+
             if off_random > 0.0 {
                 px += state.rng.next_gauss() * off_random * base_radius;
                 py += state.rng.next_gauss() * off_random * base_radius;
             }
-            if off_speed > 0.0 {
-                let mag = (state.norm_speed1_slow * 0.04).clamp(-4.0, 4.0);
-                px += ux * off_speed * dab_radius * mag;
-                py += uy * off_speed * dab_radius * mag;
+            if off_speed != 0.0 {
+                // libmypaint: `x += NORM_DX_SLOW * offset_by_speed * 0.1 /
+                // viewzoom`. Viewzoom is 1.0 here. The previous hokusai
+                // formula scaled by `dab_radius * norm_speed1_slow * 0.04`
+                // — different vector source and different scale.
+                px += state.norm_dx_slow * off_speed * 0.1;
+                py += state.norm_dy_slow * off_speed * 0.1;
             }
 
             if smudge_amt > 0.0 {
@@ -788,6 +889,92 @@ fn count_dabs_to(
     };
     let num_time = dt_left.max(0.0) * dps;
     num_actual + num_basic + num_time
+}
+
+/// Port of libmypaint's `directional_offsets`. Sums the constant
+/// `offset_x` / `offset_y` shift with up to six directional offsets:
+/// one each (and a FLIP-mirrored partner) aligned with the smoothed
+/// stroke direction, the pen ascension, and the view rotation. The
+/// final pair is scaled by `base_radius * exp(offset_multiplier)` and
+/// clamped to ±3240 px to match libmypaint's safety net against runaway
+/// memory use from extreme settings.
+///
+/// `viewrotation` is hard-coded to 0 — hokusai's `stroke_to` doesn't
+/// take a canvas rotation, so the `*_view` directions reduce to the
+/// world-x axis.
+#[allow(clippy::too_many_arguments)]
+fn directional_offsets(
+    sv: &SettingValues,
+    base_radius: f32,
+    flip: f32,
+    direction_angle_dx: f32,
+    direction_angle_dy: f32,
+    ascension_deg: f32,
+) -> (f32, f32) {
+    let offset_mult = sv.get(BrushSetting::OffsetMultiplier).exp();
+    if !offset_mult.is_finite() {
+        return (0.0, 0.0);
+    }
+
+    let mut dx = sv.get(BrushSetting::OffsetX);
+    let mut dy = sv.get(BrushSetting::OffsetY);
+
+    let offset_angle_adj = sv.get(BrushSetting::OffsetAngleAdj);
+    let stroke_angle_deg = direction_angle_dy
+        .atan2(direction_angle_dx)
+        .to_degrees()
+        - 90.0;
+    let stroke_angle_deg = stroke_angle_deg.rem_euclid(360.0);
+    let viewrotation = 0.0_f32;
+
+    let offset_angle = sv.get(BrushSetting::OffsetAngle);
+    if offset_angle != 0.0 {
+        let a = (stroke_angle_deg + offset_angle_adj).to_radians();
+        dx += a.cos() * offset_angle;
+        dy += a.sin() * offset_angle;
+    }
+
+    let offset_angle_asc = sv.get(BrushSetting::OffsetAngleAsc);
+    if offset_angle_asc != 0.0 {
+        let a = (ascension_deg - viewrotation + offset_angle_adj).to_radians();
+        dx += a.cos() * offset_angle_asc;
+        dy += a.sin() * offset_angle_asc;
+    }
+
+    let view_offset = sv.get(BrushSetting::OffsetAngleView);
+    if view_offset != 0.0 {
+        let a = (viewrotation + offset_angle_adj).to_radians();
+        dx += (-a).cos() * view_offset;
+        dy += (-a).sin() * view_offset;
+    }
+
+    let offset_dir_mirror = sv.get(BrushSetting::OffsetAngle2).max(0.0);
+    if offset_dir_mirror != 0.0 {
+        let a = (stroke_angle_deg + offset_angle_adj * flip).to_radians();
+        let factor = offset_dir_mirror * flip;
+        dx += a.cos() * factor;
+        dy += a.sin() * factor;
+    }
+
+    let offset_asc_mirror = sv.get(BrushSetting::OffsetAngle2Asc).max(0.0);
+    if offset_asc_mirror != 0.0 {
+        let a = (ascension_deg - viewrotation + offset_angle_adj * flip).to_radians();
+        let factor = offset_asc_mirror * flip;
+        dx += a.cos() * factor;
+        dy += a.sin() * factor;
+    }
+
+    let offset_view_mirror = sv.get(BrushSetting::OffsetAngle2View).max(0.0);
+    if offset_view_mirror != 0.0 {
+        let a = (viewrotation + offset_angle_adj).to_radians();
+        let factor = offset_view_mirror * flip;
+        dx += (-a).cos() * factor;
+        dy += (-a).sin() * factor;
+    }
+
+    const LIM: f32 = 3240.0;
+    let scale = base_radius * offset_mult;
+    ((dx * scale).clamp(-LIM, LIM), (dy * scale).clamp(-LIM, LIM))
 }
 
 /// libmypaint's `INPUT(ATTACK_ANGLE)`: the smallest angular difference
