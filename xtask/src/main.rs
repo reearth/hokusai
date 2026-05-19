@@ -140,18 +140,6 @@ fn cmd_parity_report() {
     let out_dir = root.join("tmp");
     std::fs::create_dir_all(&out_dir).expect("create tmp dir");
 
-    // Run the snapshot test in update-actual mode by invoking the snapshot
-    // test binary; rendering happens through hokusai_compat::render so the
-    // .actual.png files reflect the current code.
-    eprintln!("rendering current actuals via snapshot test…");
-    let _ = std::process::Command::new("cargo")
-        .args([
-            "test", "-p", "hokusai-compat", "--test", "snapshots",
-            "--", "--quiet",
-        ])
-        .current_dir(&root)
-        .status();
-
     let mut entries: Vec<_> = std::fs::read_dir(&fixtures)
         .expect("read fixtures dir")
         .filter_map(Result::ok)
@@ -160,41 +148,43 @@ fn cmd_parity_report() {
         .collect();
     entries.sort();
 
+    // Render every fixture's current hokusai output and overwrite the
+    // `<stem>.actual.png` next to it. The snapshot test only writes this
+    // file on mismatch, so passing fixtures otherwise leave stale images
+    // sitting on disk — exactly what made earlier parity reports show
+    // unchanged charcoal output after charcoal was fixed.
+    eprintln!("rendering current hokusai actuals for {} fixtures…", entries.len());
+    for path in &entries {
+        if let Err(e) = render_actual(path) {
+            eprintln!("FAIL {}: {e}", path.display());
+        }
+    }
+
     let mut rows = String::new();
     for path in &entries {
         let stem = path.file_stem().unwrap().to_string_lossy();
         let golden = fixtures.join(format!("{stem}.png"));
         let actual = fixtures.join(format!("{stem}.actual.png"));
-        let actual_exists = actual.exists();
-        let mad = if actual_exists {
-            compute_mad(&golden, &actual).unwrap_or(f32::NAN)
-        } else {
-            0.0
-        };
-        let status = if !actual_exists {
-            "passing".to_string()
-        } else if mad <= 0.5 {
+        let mad = compute_mad(&golden, &actual).unwrap_or(f32::NAN);
+        let status = if mad <= 0.5 {
             format!("{mad:.2} ≤ 0.50 (passing)")
         } else {
             format!("{mad:.2}")
         };
-        let row_class = if !actual_exists || mad <= 0.5 {
+        let row_class = if mad.is_nan() {
+            "fail"
+        } else if mad <= 0.5 {
             "pass"
         } else if mad <= 5.0 {
             "warn"
         } else {
             "fail"
         };
-        let actual_src = if actual_exists {
-            format!("../crates/hokusai-compat/fixtures/{stem}.actual.png")
-        } else {
-            format!("../crates/hokusai-compat/fixtures/{stem}.png")
-        };
         write!(
             rows,
             r##"<tr class="{row_class}"><th>{stem}</th>
 <td><img src="../crates/hokusai-compat/fixtures/{stem}.png" alt="golden"></td>
-<td><img src="{actual_src}" alt="actual"></td>
+<td><img src="../crates/hokusai-compat/fixtures/{stem}.actual.png" alt="actual"></td>
 <td class="mad">{status}</td></tr>
 "##,
         )
@@ -230,6 +220,24 @@ fn cmd_parity_report() {
     let out_path = out_dir.join("parity.html");
     std::fs::write(&out_path, html).expect("write html");
     println!("wrote {}", out_path.display());
+}
+
+fn render_actual(script_path: &std::path::Path) -> Result<(), String> {
+    let script = hokusai_compat::load_script(script_path)
+        .map_err(|e| format!("load script: {e}"))?;
+    let brush_path = script_path.parent().unwrap().join(&script.brush);
+    let brush = hokusai_compat::load_brush(&brush_path)
+        .map_err(|e| format!("load brush: {e}"))?;
+    let pixels = hokusai_compat::render(&brush, &script);
+    let actual = script_path.with_extension("actual.png");
+    image::save_buffer(
+        &actual,
+        &pixels,
+        script.width,
+        script.height,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("save {}: {e}", actual.display()))
 }
 
 fn compute_mad(a: &std::path::Path, b: &std::path::Path) -> Option<f32> {

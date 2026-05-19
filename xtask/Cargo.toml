@@ -10,3 +10,4 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
+hokusai-compat = { path = "../crates/hokusai-compat" }
