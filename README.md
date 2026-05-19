@@ -2,14 +2,14 @@
 
 A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/libmypaint), designed for WebAssembly and native targets.
 
-> **Status:** Early development (M1). Brush data types, `.myb` JSON I/O, tiled-surface abstraction, and an in-memory reference surface are in place. The stroke engine itself (M2) and pixel blending (M3) are not yet implemented.
+The full pipeline — `.myb` brush load → stroke engine → dab blend on tiles — is implemented and can render real libmypaint brushes (`charcoal`, `calligraphy`, `marker_fat`, …). Pixel-level parity with libmypaint is the goal; the gap is tracked in [TODO](#todo).
 
 ## Goals
 
 - **Pure Rust, no `unsafe`** — clean WASM (`wasm32-unknown-unknown`) story.
 - **libmypaint `.myb` JSON compatibility** — brushes authored for MyPaint / Krita load and round-trip without translation.
-- **Pixel-level parity with libmypaint** — same fix15 math, same tile layout, same stroke math. Compatibility is the design priority; the "Hokusai" name does not imply behavioral divergence.
-- **Pluggable surfaces** via the `TiledSurface` trait. Backends are split into feature-gated crates (`tile-mem`, `tiny-skia` planned, …).
+- **Pixel-level parity with libmypaint** — same fix15 math, same tile layout, same stroke math. Compatibility is the design priority; the "Hokusai" name does not imply behavioural divergence.
+- **Pluggable surfaces** via the `TiledSurface` trait. Backends are split into feature-gated crates.
 - **Tile-based infinite canvas** — 64×64 RGBA fix15 tiles, matching libmypaint exactly so dab traversal and rounding stay bit-identical.
 
 ## Workspace layout
@@ -17,54 +17,119 @@ A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/lib
 ```
 hokusai/
 ├── crates/
-│   ├── hokusai-core/        # Brush types, state, fix15, tiles, surface trait
+│   ├── hokusai-core/        # Brush types, stroke engine, fix15, tiles, brushmodes
 │   ├── hokusai-brush/       # libmypaint `.myb` JSON read / write
-│   └── hokusai-tile-mem/    # Reference in-memory TiledSurface
+│   ├── hokusai-tile-mem/    # Reference in-memory TiledSurface
+│   └── hokusai-compat/      # Snapshot regression harness (libmypaint parity track)
 └── hokusai/                 # Umbrella crate that re-exports the above via features
+    └── examples/            # stroke_to_png, myb_to_png (+ vendored .myb fixtures)
 ```
 
-Planned crates: `hokusai-tiny-skia` (raster output), `hokusai-wasm` (`wasm-bindgen` glue), `hokusai-compat-tests` (libmypaint parity fixtures).
+Planned: `hokusai-tiny-skia` (raster output), `hokusai-wasm` (`wasm-bindgen` glue).
 
 ## Quick look
 
 ```rust
-use hokusai::{Brush, BrushSetting};
+use hokusai::{Brush, BrushSetting, BrushState};
 use hokusai::myb;
 use hokusai::tile_mem::MemSurface;
 
-let json = std::fs::read_to_string("classic_pen.myb")?;
+let json = std::fs::read_to_string("charcoal.myb")?;
 let brush: Brush = myb::from_str(&json)?;
 
-assert_eq!(brush.get(BrushSetting::Radius).base_value, 2.5);
+let mut state = BrushState::default();
+let mut surface = MemSurface::new();
 
-let mut _surface = MemSurface::new();
-// brush.stroke_to(&mut state, &mut surface, x, y, pressure, xtilt, ytilt, dtime);
-// ^ available once the M2 stroke engine lands.
+// First call seeds position only; subsequent calls emit dabs.
+brush.stroke_to(&mut state, &mut surface,  10.0, 50.0, 0.0, 0.0, 0.0, 0.01);
+brush.stroke_to(&mut state, &mut surface, 200.0, 50.0, 1.0, 0.0, 0.0, 0.01);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Run the bundled examples to render to PNG:
+
+```sh
+cargo run --example stroke_to_png --features tile-mem
+cargo run --example myb_to_png --features "tile-mem myb-json" -- \
+    hokusai/examples/fixtures/calligraphy.myb out.png
+```
+
+## Features
+
+**Brush data**
+- All ~50 libmypaint settings as a strongly-typed enum with libmypaint-canonical string keys
+- All inputs (`pressure`, `speed1/2`, `random`, `stroke`, `direction`, `tilt`, …)
+- `.myb` v3 JSON parse / serialize, round-trip safe for known keys
+
+**Stroke engine**
+- Per-event setting evaluation (`base_value + Σ curve(input)`)
+- `slow_tracking` smoothing of the cursor path
+- Distance + time based dab spacing (`dabs_per_actual_radius`, `dabs_per_basic_radius`, `dabs_per_second`)
+- Per-dab HSV drift via `change_color_h` / `change_color_v` / `change_color_hsv_s`
+- Smudge bucket sampling and mixing
+- Fresh-stroke / long-pause detection
+
+**Pixel blending (`draw_dab`)**
+- Normal + Eraser blend in linear sRGB fix15 (premultiplied alpha)
+- Two-segment hardness falloff
+- Elliptical dabs (`aspect_ratio`, `angle`)
+- `anti_aliasing` edge feathering
+- `lock_alpha` masking
+- `posterize` per-pixel quantization
+
+**Infrastructure**
+- Tile-aware traversal across arbitrary canvas extents
+- Deterministic MT19937 PRNG
+- Snapshot regression harness (`hokusai-compat`) with `HOKUSAI_UPDATE_GOLDENS=1`
+- CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.75
+
+## TODO
+
+### Stroke engine
+- [ ] **`tracking_noise`** — random jitter added to the smoothed pointer position
+- [ ] **`attack`** input — initial pressure ramp at stroke start
+- [ ] **`stroke_holdtime`** + `stroke_duration_logarithmic` for the `Stroke` input
+- [ ] **Speed slowness low-pass** (`speed1_slowness`, `speed2_slowness`) — currently uses raw event speed
+- [ ] **`offset_by_random`** / **`offset_by_speed`** dab position jitter
+- [ ] **`stroke_threshold`** — suppress dabs below a pressure floor
+- [ ] **Tilt-derived inputs** (`tilt_declination`, `tilt_ascension`) — currently `0.0`
+- [ ] **Custom input** — recursive evaluation through `custom_input` / `custom_input_slowness`
+- [ ] **Slow tracking per-dab** (`slow_tracking_per_dab`) for radius smoothing
+- [ ] **Gridmap inputs** (`gridmap_x`, `gridmap_y`)
+- [ ] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`)
+
+### Pixel blending
+- [ ] **Colorize** — HSL hue/saturation replacement at the destination pixel
+- [ ] **Spectral `paint` mode** — modern MyPaint pigment mixing
+- [ ] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
+- [ ] Direct `tile_lookup`-free `get_color` path for backends that can't expose tiles
+
+### Compatibility
+- [ ] **libmypaint-sourced golden snapshots** — replace the self-generated PNGs under `crates/hokusai-compat/fixtures/` with output from upstream libmypaint to make the harness actually verify parity (see `crates/hokusai-compat/src/lib.rs` docs)
+- [ ] **GRand-compatible** PRNG output mapping — current PRNG is MT19937 but the `g_rand_double` / `g_rand_int_range` wrappers haven't been bit-matched yet
+- [ ] **Lossless round-trip** for unknown `.myb` settings (preserve, don't drop)
+- [ ] Compatibility tests against the full libmypaint brush pack
+
+### Backends
+- [ ] **`hokusai-tiny-skia`** — flatten tiles into a `tiny-skia` `Pixmap`
+- [ ] **`hokusai-wasm`** — `wasm-bindgen` JS bindings + browser demo
+
 ## Cargo features (umbrella `hokusai` crate)
 
-| Feature   | Default | What it enables                                  |
-|-----------|---------|--------------------------------------------------|
-| `myb-json`| ✅      | `.myb` JSON parser / serializer                  |
-| `tile-mem`| ✅      | Reference `HashMap`-backed `TiledSurface`        |
-| `tiny-skia` | —     | (planned) `tiny-skia` Pixmap backend             |
-| `wasm`    | —       | (planned) `wasm-bindgen` JS bindings             |
+| Feature     | Default | What it enables                              |
+|-------------|---------|----------------------------------------------|
+| `myb-json`  | ✅      | `.myb` JSON parser / serializer              |
+| `tile-mem`  | ✅      | Reference `HashMap`-backed `TiledSurface`    |
+| `tiny-skia` | —       | (planned) `tiny-skia` Pixmap backend         |
+| `wasm`      | —       | (planned) `wasm-bindgen` JS bindings         |
 
-## Roadmap
+## Contributing
 
-- **M1** — Types, `.myb` I/O, tile / surface scaffolding ✅
-- **M2** — Stroke engine port (`mypaint-brush.c` → Rust) + GRand-compatible PRNG
-- **M3** — `draw_dab` / `get_color` port (`brushmodes.c`) with pixel-parity tests
-- **M4** — `tiny-skia` surface backend
-- **M5** — `wasm-bindgen` bindings + browser demo
-- **M6** — Spectral color mixing (`paint` setting), modern MyPaint additions
-
-## Compatibility
-
-Settings and input names use libmypaint's canonical string identifiers (see `BrushSetting::cname` and `BrushInput::cname`). Unknown keys are skipped on parse today; lossless round-trip for unrecognised settings is planned.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build / test / snapshot workflow,
+fixture conventions, and commit-message style.
 
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+
+Vendored brush fixtures under `hokusai/examples/fixtures/` are unmodified copies from [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) (CC0 1.0).
