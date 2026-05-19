@@ -49,7 +49,7 @@ pub struct BrushState {
 }
 
 impl BrushState {
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u32) -> Self {
         Self {
             actual_x: 0.0,
             actual_y: 0.0,

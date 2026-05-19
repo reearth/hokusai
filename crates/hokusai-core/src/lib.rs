@@ -10,6 +10,7 @@
 
 pub mod brush;
 pub mod color;
+pub mod evaluator;
 pub mod fix15;
 pub mod input;
 pub mod mapping;
