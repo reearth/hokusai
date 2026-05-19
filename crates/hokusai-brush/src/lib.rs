@@ -30,6 +30,58 @@ use hokusai_core::brush::UnknownSetting;
 use hokusai_core::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 use serde::{Deserialize, Serialize};
 
+/// libmypaint's `brushsettings.json` defaults for every setting whose
+/// `def` is non-zero, plus the special `opaque_multiply` pressure
+/// mapping that `mypaint_brush_set_defaults` installs. Settings absent
+/// from the .myb JSON inherit these values, matching libmypaint's
+/// behaviour where `mypaint_brush_new` seeds the brush with the JSON
+/// defaults before any per-brush override.
+fn apply_libmypaint_defaults(brush: &mut Brush) {
+    use BrushSetting::*;
+    const DEFAULTS: &[(BrushSetting, f32)] = &[
+        (Opaque, 1.0),
+        (OpaqueLinearize, 0.9),
+        (Radius, 2.0),
+        (Hardness, 0.8),
+        (AntiAliasing, 1.0),
+        (DabsPerActualRadius, 2.0),
+        (Speed1Slowness, 0.04),
+        (Speed2Slowness, 0.8),
+        (Speed1Gamma, 4.0),
+        (Speed2Gamma, 4.0),
+        (OffsetBySpeedSlowness, 1.0),
+        (SmudgeLength, 0.5),
+        (StrokeDurationLogarithmic, 4.0),
+        (EllipticalDabRatio, 1.0),
+        (EllipticalDabAngle, 90.0),
+        (DirectionFilter, 2.0),
+        (GridmapScaleX, 1.0),
+        (GridmapScaleY, 1.0),
+        (PosterizeNum, 0.05),
+        (Paint, 1.0),
+    ];
+    for (setting, def) in DEFAULTS {
+        if brush.get(*setting).base_value == 0.0
+            && brush.get(*setting).inputs.is_empty()
+            && brush.get(*setting).unknown_inputs.is_empty()
+        {
+            brush.set(*setting, SettingValue::constant(*def));
+        }
+    }
+    // opaque_multiply default: base 0 with pressure mapping [(0,0),(1,1)].
+    // We only install it when the brush left the setting completely
+    // untouched — a brush that explicitly clears it should stay cleared.
+    let om = brush.get(OpaqueMultiply);
+    if om.base_value == 0.0 && om.inputs.is_empty() && om.unknown_inputs.is_empty() {
+        let mut sv = SettingValue::constant(0.0);
+        sv.inputs.push(InputMapping {
+            input: BrushInput::Pressure,
+            points: vec![(0.0, 0.0), (1.0, 1.0)],
+        });
+        brush.set(OpaqueMultiply, sv);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("json: {0}")]
@@ -77,6 +129,16 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
     brush.group = raw.group;
     brush.parent_brush_name = raw.parent_brush_name;
     brush.comment = raw.comment;
+
+    // libmypaint initialises every setting to its `brushsettings.json`
+    // default before applying overrides from the .myb file
+    // (mypaint_brush_new → set_defaults in mypaint-brush.c). Many
+    // commonly-omitted settings have non-zero defaults — most
+    // visibly `paint_mode = 1.0` (spectral pigment mixing) and
+    // `opaque_multiply = 0` with a pressure curve [(0,0),(1,1)] —
+    // so brushes that don't list them in JSON still pick up the
+    // libmypaint behaviour. Apply the same defaults here.
+    apply_libmypaint_defaults(&mut brush);
 
     for (name, rs) in raw.settings {
         let Some(setting) = BrushSetting::from_cname(&name) else {
