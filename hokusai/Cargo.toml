@@ -16,3 +16,10 @@ tile-mem = ["dep:hokusai-tile-mem"]
 hokusai-core = { workspace = true }
 hokusai-brush = { workspace = true, optional = true }
 hokusai-tile-mem = { workspace = true, optional = true }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "stroke_to_png"
+required-features = ["tile-mem"]
