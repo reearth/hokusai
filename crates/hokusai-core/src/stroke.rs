@@ -884,12 +884,21 @@ impl Brush {
             state.random_input = state.rng.next_unit();
 
             dtime_left = (dtime_left - step_dtime).max(0.0);
+            // libmypaint's count_dabs_to reads STATE.ACTUAL_ELLIPTICAL_DAB_*
+            // (which were assigned SETTING() values per-dab in
+            // update_states_and_setting_values lines 807-809), so the
+            // recount inside the loop uses the freshly-evaluated per-dab
+            // aspect / angle. Match that here.
+            let next_aspect =
+                dab_sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
+            let next_angle_rad =
+                dab_sv.get(BrushSetting::EllipticalDabAngle).to_radians();
             dabs_todo = count_dabs_to(
                 cur_x, cur_y, target_x, target_y,
                 dab_radius, base_radius,
                 dpar, dpbr, dps,
                 dtime_left,
-                dab_angle_rad, aspect,
+                next_angle_rad, next_aspect,
             );
         }
 
