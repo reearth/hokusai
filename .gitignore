@@ -6,3 +6,4 @@ Cargo.lock
 /out-*.png
 /crates/hokusai-wasm/demo/pkg/
 /crates/hokusai-wasm/demo/brushes/
+/crates/hokusai-compat/fixtures/*.actual.png
