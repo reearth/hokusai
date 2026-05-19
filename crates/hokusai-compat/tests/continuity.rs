@@ -81,8 +81,7 @@ fn longest_white_run(
 
 const MAX_GAP_PX: u32 = 6;
 
-fn check(name: &str, brush: &str) {
-    let script = horizontal_script(brush, 40.0, 8.0, 0.016, 80);
+fn check(name: &str, script: Script) {
     let brush_obj = load_brush(&script.brush).unwrap();
     let pixels = render(&brush_obj, &script);
     let gap = longest_white_run(&pixels, script.width, 30, 20, 40..(script.width - 40));
@@ -94,18 +93,176 @@ fn check(name: &str, brush: &str) {
     );
 }
 
+/// Simulate the kind of event stream a browser pointermove produces during
+/// an actual drag: bursts of small deltas with occasional larger jumps when
+/// the OS coalesces frames under load.
+fn variable_speed_script(brush: &str, y: f32) -> Script {
+    let deltas: &[f32] = &[
+        4.0, 6.0, 8.0, 12.0, 14.0, 16.0, 18.0, 22.0, // accelerate
+        24.0, 22.0, 20.0, 16.0, // peak then ease
+        12.0, 14.0, 10.0, 8.0, 6.0, // settle
+        4.0, 5.0, 6.0, 7.0, 30.0, // small skip-burst (coalesce)
+        20.0, 16.0, 12.0, 8.0, 5.0, 4.0, 3.0, 2.0, // wind down
+    ];
+    let dt: f32 = 0.016;
+    let mut events = Vec::with_capacity(deltas.len() + 1);
+    let mut x = 20.0;
+    events.push([x, y, 1.0, dt]);
+    for &d in deltas {
+        x += d;
+        events.push([x, y, 1.0, dt]);
+    }
+    Script {
+        brush: brush_path(brush),
+        width: (x as u32) + 40,
+        height: 80,
+        events,
+    }
+}
+
 #[test]
 fn marker_fat_horizontal_no_big_gaps() {
-    // Mimic a browser pointermove burst: 16 ms / event, ~8 px between events.
-    check("marker_fat", "marker_fat.myb");
+    check(
+        "marker_fat",
+        horizontal_script("marker_fat.myb", 40.0, 8.0, 0.016, 80),
+    );
 }
 
 #[test]
 fn calligraphy_horizontal_no_big_gaps() {
-    check("calligraphy", "calligraphy.myb");
+    check(
+        "calligraphy",
+        horizontal_script("calligraphy.myb", 40.0, 8.0, 0.016, 80),
+    );
 }
 
 #[test]
 fn charcoal_horizontal_no_big_gaps() {
-    check("charcoal", "charcoal.myb");
+    check(
+        "charcoal",
+        horizontal_script("charcoal.myb", 40.0, 8.0, 0.016, 80),
+    );
+}
+
+#[test]
+fn marker_fat_variable_speed_no_big_gaps() {
+    check(
+        "marker_fat (var)",
+        variable_speed_script("marker_fat.myb", 40.0),
+    );
+}
+
+#[test]
+fn calligraphy_variable_speed_no_big_gaps() {
+    check(
+        "calligraphy (var)",
+        variable_speed_script("calligraphy.myb", 40.0),
+    );
+}
+
+#[test]
+fn charcoal_variable_speed_no_big_gaps() {
+    check(
+        "charcoal (var)",
+        variable_speed_script("charcoal.myb", 40.0),
+    );
+}
+
+#[test]
+fn brush_variable_speed_no_big_gaps() {
+    check("brush (var)", variable_speed_script("brush.myb", 40.0));
+}
+
+// Cover a wide grid of constant speeds — the live demo with mouse can fall
+// anywhere in this range depending on user motion. Catches gaps the single
+// "average" speed test would miss.
+fn constant_grid(brush: &str, dx_per_ev: f32, dt: f32, n: usize) -> Script {
+    horizontal_script(brush, 40.0, dx_per_ev, dt, n)
+}
+
+#[test]
+fn marker_fat_constant_speed_grid() {
+    // 4 / 8 / 16 / 32 px per 16 ms event — slow drag, normal, fast, flick.
+    for (label, dx) in [("4px", 4.0), ("8px", 8.0), ("16px", 16.0), ("32px", 32.0)] {
+        check(
+            &format!("marker_fat {label}"),
+            constant_grid("marker_fat.myb", dx, 0.016, 80),
+        );
+    }
+}
+
+#[test]
+fn calligraphy_constant_speed_grid() {
+    for (label, dx) in [("4px", 4.0), ("8px", 8.0), ("16px", 16.0), ("32px", 32.0)] {
+        check(
+            &format!("calligraphy {label}"),
+            constant_grid("calligraphy.myb", dx, 0.016, 80),
+        );
+    }
+}
+
+#[test]
+fn charcoal_constant_speed_grid() {
+    for (label, dx) in [("4px", 4.0), ("8px", 8.0), ("16px", 16.0), ("32px", 32.0)] {
+        check(
+            &format!("charcoal {label}"),
+            constant_grid("charcoal.myb", dx, 0.016, 80),
+        );
+    }
+}
+
+#[test]
+fn brush_constant_speed_grid() {
+    for (label, dx) in [("4px", 4.0), ("8px", 8.0), ("16px", 16.0), ("32px", 32.0)] {
+        check(
+            &format!("brush {label}"),
+            constant_grid("brush.myb", dx, 0.016, 80),
+        );
+    }
+}
+
+/// Browser `getCoalescedEvents()` replays sub-events with their own (small)
+/// timestamps. Simulate it: each "frame" produces 4 sub-events at 4 ms each,
+/// 2 px apart — totalling 8 px / 16 ms (a 500 px/s drag) but plumbed
+/// through the engine as 4 short events instead of one full one.
+fn coalesced_script(brush: &str, y: f32, sub_dt: f32, sub_dx: f32, sub_n: usize) -> Script {
+    let mut events = Vec::with_capacity(sub_n + 1);
+    let mut x = 20.0;
+    // Initial seed.
+    events.push([x, y, 1.0, sub_dt]);
+    for _ in 0..sub_n {
+        x += sub_dx;
+        events.push([x, y, 1.0, sub_dt]);
+    }
+    Script {
+        brush: brush_path(brush),
+        width: (x as u32) + 40,
+        height: 80,
+        events,
+    }
+}
+
+#[test]
+fn marker_fat_coalesced_short_dt() {
+    // 4 sub-events / frame × 80 frames = 320 events of 4 ms / 2 px.
+    check(
+        "marker_fat (coalesced)",
+        coalesced_script("marker_fat.myb", 40.0, 0.004, 2.0, 320),
+    );
+}
+
+#[test]
+fn charcoal_coalesced_short_dt() {
+    check(
+        "charcoal (coalesced)",
+        coalesced_script("charcoal.myb", 40.0, 0.004, 2.0, 320),
+    );
+}
+
+#[test]
+fn brush_coalesced_short_dt() {
+    check(
+        "brush (coalesced)",
+        coalesced_script("brush.myb", 40.0, 0.004, 2.0, 320),
+    );
 }
