@@ -95,24 +95,16 @@ impl Brush {
 
         // --- Speed slowness: low-pass filter the raw speed for both bands ---
         // libmypaint treats `speedN_slowness` as a time constant in seconds
-        // and applies `fac = 1 - exp(-dt / slow)`. We read the base value
-        // (these settings rarely receive input mappings, so the
-        // simplification is exact in practice and avoids the chicken-and-egg
-        // of speed-feeding-itself).
+        // and applies `fac = 1 - exp(-step_dtime / slow)`. The smoothing is
+        // run *inside* the dab loop using each step's slice of `dtime`, so
+        // the first dab of a fresh segment only inherits a tiny fraction of
+        // the new raw speed. Hokusai used to apply the full-event smoothing
+        // up front, which pushed `norm_speed1_slow` straight to its final
+        // value on dab #1 and tanked the radius for any brush whose
+        // `radius_logarithmic` curve includes `speed1` (calligraphy, …).
+        // Just cache the inputs here; advance the state per dab below.
         let slow1 = self.get(BrushSetting::Speed1Slowness).base_value.max(0.0);
         let slow2 = self.get(BrushSetting::Speed2Slowness).base_value.max(0.0);
-        let fac1 = if slow1 > 1e-3 {
-            1.0 - (-dt / slow1).exp()
-        } else {
-            1.0
-        };
-        let fac2 = if slow2 > 1e-3 {
-            1.0 - (-dt / slow2).exp()
-        } else {
-            1.0
-        };
-        state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
-        state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
 
         // --- Stroke progress: 0..1 across `stroke_duration_logarithmic` ----
         // libmypaint stores duration as `ln(seconds)`, so `exp(dur_log)` is
@@ -190,20 +182,21 @@ impl Brush {
         // brush's effective radius in pixels is `exp(value)`. Using `exp2`
         // here previously made every dab ~2.6× smaller than libmypaint's.
         let radius = sv.get(BrushSetting::Radius).exp().max(0.1);
-        state.actual_radius = radius;
 
         // For the dab-count step we need the radius at the *start* of this
-        // segment (libmypaint advances `STATE.ACTUAL_RADIUS` step-by-step
-        // inside its inner loop and recomputes `count_dabs_to` against the
-        // updated value — using the end-of-event radius here significantly
-        // undercounts when radius is growing). Re-evaluate the radius input
-        // with `entry_pressure` so we start the count from the same place.
-        let entry_radius = {
-            let mut entry_inputs = inputs.clone();
-            entry_inputs.set(BrushInput::Pressure, entry_pressure);
-            let entry_sv = evaluate(self, &entry_inputs);
-            entry_sv.get(BrushSetting::Radius).exp().max(0.1)
+        // segment. libmypaint uses `STATE.ACTUAL_RADIUS` here — for a fresh
+        // stroke that's 0 (cleared by `brush_reset`), which `count_dabs_to`
+        // then defaults to `base_radius`. For subsequent events it's the
+        // radius the last dab drew at (≈ end-of-segment pressure's radius).
+        // Mirror that: prefer the carried-over `state.actual_radius`, fall
+        // back to `base_radius` for the first event so we don't pile dabs
+        // up at the very start of the stroke.
+        let entry_radius = if state.actual_radius > 0.0 {
+            state.actual_radius
+        } else {
+            base_radius
         };
+        state.actual_radius = radius;
 
         // --- Slow tracking: advance smoothed position toward the event ------
         // libmypaint applies an exponential moving average with time
@@ -318,6 +311,40 @@ impl Brush {
                 let dab_pressure =
                     entry_pressure + (pressure - entry_pressure) * frac.clamp(0.0, 1.0);
                 dab_inputs.set(BrushInput::Pressure, dab_pressure);
+
+                // Per-dab speed smoothing: libmypaint runs the slowness
+                // low-pass once per dab using `step_dtime = dt / n` so the
+                // first dab inherits only a sliver of the event's raw
+                // speed. Matching that means re-evaluating `speedN_input`
+                // here against the freshly advanced `norm_speedN_slow`.
+                let step_dtime = dt_per_dab;
+                let fac1 = if slow1 > 1e-3 {
+                    1.0 - (-step_dtime / slow1).exp()
+                } else {
+                    1.0
+                };
+                let fac2 = if slow2 > 1e-3 {
+                    1.0 - (-step_dtime / slow2).exp()
+                } else {
+                    1.0
+                };
+                state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
+                state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
+                dab_inputs.set(
+                    BrushInput::Speed1,
+                    speed_input(
+                        state.norm_speed1_slow,
+                        self.get(BrushSetting::Speed1Gamma).base_value,
+                    ),
+                );
+                dab_inputs.set(
+                    BrushInput::Speed2,
+                    speed_input(
+                        state.norm_speed2_slow,
+                        self.get(BrushSetting::Speed2Gamma).base_value,
+                    ),
+                );
+
                 // libmypaint feeds the current `random_input` into the
                 // setting evaluation for this dab — see
                 // `INPUT(RANDOM) = self->random_input;` inside
