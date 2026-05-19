@@ -60,6 +60,10 @@ impl Brush {
             state.smudge_ga = 0.0;
             state.smudge_ba = 0.0;
             state.smudge_a = 0.0;
+            state.norm_speed1_slow = 0.0;
+            state.norm_speed2_slow = 0.0;
+            state.stroke_total_painting_time = 0.0;
+            state.stroke_current_idling_time = 0.0;
             state.started = true;
             return false;
         }
@@ -71,16 +75,54 @@ impl Brush {
         let dist_raw = (dx_raw * dx_raw + dy_raw * dy_raw).sqrt();
         let raw_speed = dist_raw / dt;
 
+        // --- Speed slowness: low-pass filter the raw speed for both bands ---
+        // libmypaint reads slowness from the brush base values (these settings
+        // rarely receive input mappings, so the simplification is exact in
+        // practice and avoids the chicken-and-egg of speed-feeding-itself).
+        let slow1 = self
+            .get(BrushSetting::Speed1Slowness)
+            .base_value
+            .clamp(0.0, 1.0);
+        let slow2 = self
+            .get(BrushSetting::Speed2Slowness)
+            .base_value
+            .clamp(0.0, 1.0);
+        let alpha1 = 1.0 - (1.0 - slow1).powf((dt * 60.0).max(1e-3));
+        let alpha2 = 1.0 - (1.0 - slow2).powf((dt * 60.0).max(1e-3));
+        state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * (1.0 - alpha1);
+        state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * (1.0 - alpha2);
+
+        // --- Stroke progress: 0..1 across `stroke_duration_logarithmic` ----
+        // dur_log is log2(seconds), so `2^dur_log` is the configured length.
+        let dur_log = self.get(BrushSetting::StrokeDurationLogarithmic).base_value;
+        let dur = dur_log.exp2().max(0.01);
+        let stroke_progress = (state.stroke_total_painting_time as f32 / dur).clamp(0.0, 1.0);
+
+        // --- Tilt-derived inputs --------------------------------------------
+        // xtilt, ytilt come in normalized to [-1, 1] from Wacom-style devices.
+        // declination = asin(|tilt|) → 0° straight up, 90° lying flat.
+        // ascension   = atan2(ytilt, xtilt) → rotation around the up axis.
+        let tilt_mag = (xtilt * xtilt + ytilt * ytilt).sqrt().min(1.0);
+        let tilt_declination = tilt_mag.asin().to_degrees();
+        let tilt_ascension = if xtilt == 0.0 && ytilt == 0.0 {
+            0.0
+        } else {
+            ytilt.atan2(xtilt).to_degrees()
+        };
+
         // --- Build input vector ---------------------------------------------
         let mut inputs = InputValues::new();
         inputs.set(BrushInput::Pressure, pressure);
-        inputs.set(BrushInput::Speed1, log_speed(raw_speed));
-        inputs.set(BrushInput::Speed2, log_speed(raw_speed));
+        inputs.set(BrushInput::Speed1, log_speed(state.norm_speed1_slow));
+        inputs.set(BrushInput::Speed2, log_speed(state.norm_speed2_slow));
         inputs.set(BrushInput::Random, state.rng.next_unit());
-        inputs.set(BrushInput::Stroke, 0.0);
+        inputs.set(BrushInput::Stroke, stroke_progress);
+        inputs.set(BrushInput::Attack, stroke_progress);
         inputs.set(BrushInput::Direction, direction_input(dx_raw, dy_raw));
         inputs.set(BrushInput::DirectionAngle, direction_angle(dx_raw, dy_raw));
-        inputs.set(BrushInput::Tilt, (xtilt * xtilt + ytilt * ytilt).sqrt());
+        inputs.set(BrushInput::Tilt, tilt_mag);
+        inputs.set(BrushInput::TiltDeclination, tilt_declination);
+        inputs.set(BrushInput::TiltAscension, tilt_ascension);
         let sv = evaluate(self, &inputs);
 
         // --- Resolve actual radius ------------------------------------------
@@ -315,6 +357,67 @@ mod tests {
             "slow_tracking should suppress dab count: {} >= {}",
             surf_b.count,
             surf_a.count
+        );
+    }
+
+    #[test]
+    fn speed_slowness_smooths_speed_input() {
+        // High slowness → speed1_slow stays near 0 even after rapid event.
+        let mut b = make_brush(1.0, 2.0);
+        b.set(BrushSetting::Speed1Slowness, SettingValue::constant(0.99));
+        let mut state = BrushState::default();
+        let mut surf = CountingSurface { count: 0 };
+        b.stroke_to(&mut state, &mut surf, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        b.stroke_to(&mut state, &mut surf, 200.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        let smoothed = state.norm_speed1_slow;
+
+        let b2 = make_brush(1.0, 2.0); // slowness = 0 (default)
+        let mut state2 = BrushState::default();
+        let mut surf2 = CountingSurface { count: 0 };
+        b2.stroke_to(&mut state2, &mut surf2, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        b2.stroke_to(&mut state2, &mut surf2, 200.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        let raw = state2.norm_speed1_slow;
+
+        assert!(
+            smoothed < raw,
+            "slowness should suppress speed1_slow ({smoothed} >= {raw})"
+        );
+    }
+
+    #[test]
+    fn tilt_declination_is_zero_when_pen_upright() {
+        let brush = make_brush(1.0, 2.0);
+        let mut state = BrushState::default();
+        let mut surf = CountingSurface { count: 0 };
+        brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        brush.stroke_to(&mut state, &mut surf, 10.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        // We don't store tilt directly; check via a brush that maps it.
+        let mut tilt_brush = make_brush(1.0, 2.0);
+        tilt_brush.set(
+            BrushSetting::Radius,
+            SettingValue {
+                base_value: 1.0,
+                inputs: vec![crate::mapping::InputMapping {
+                    input: BrushInput::TiltDeclination,
+                    points: vec![(0.0, 0.0), (90.0, 1.0)],
+                }],
+            },
+        );
+        let mut s1 = BrushState::default();
+        let mut surf1 = CountingSurface { count: 0 };
+        tilt_brush.stroke_to(&mut s1, &mut surf1, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        tilt_brush.stroke_to(&mut s1, &mut surf1, 10.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        let r_upright = s1.actual_radius;
+
+        let mut s2 = BrushState::default();
+        let mut surf2 = CountingSurface { count: 0 };
+        tilt_brush.stroke_to(&mut s2, &mut surf2, 0.0, 0.0, 1.0, 1.0, 0.0, 0.01);
+        tilt_brush.stroke_to(&mut s2, &mut surf2, 10.0, 0.0, 1.0, 1.0, 0.0, 0.01);
+        let r_tilted = s2.actual_radius;
+
+        assert!(
+            r_tilted > r_upright,
+            "tilted pen should map to bigger radius via declination: {r_tilted} <= {r_upright}"
         );
     }
 

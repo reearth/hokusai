@@ -1,5 +1,10 @@
 # Hokusai
 
+[![Crates.io](https://img.shields.io/crates/v/hokusai.svg)](https://crates.io/crates/hokusai)
+[![Docs.rs](https://docs.rs/hokusai/badge.svg)](https://docs.rs/hokusai)
+[![CI](https://github.com/reearth/hokusai/actions/workflows/ci.yml/badge.svg)](https://github.com/reearth/hokusai/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/hokusai.svg)](#license)
+
 A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/libmypaint), designed for WebAssembly and native targets.
 
 The full pipeline — `.myb` brush load → stroke engine → dab blend on tiles — is implemented and can render real libmypaint brushes (`charcoal`, `calligraphy`, `marker_fat`, …). Pixel-level parity with libmypaint is the goal; the gap is tracked in [TODO](#todo).
