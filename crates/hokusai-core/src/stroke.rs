@@ -66,6 +66,8 @@ impl Brush {
             state.last_event_time += dtime;
             state.actual_x = x;
             state.actual_y = y;
+            state.actual_dab_x = x;
+            state.actual_dab_y = y;
             state.last_dab_x = x;
             state.last_dab_y = y;
             state.dist_past_dab = 0.0;
@@ -229,179 +231,196 @@ impl Brush {
         let below_threshold = pressure < threshold;
 
         // --- Dab count along the smoothed segment ---------------------------
-        let dpar = sv.get(BrushSetting::DabsPerActualRadius).max(0.0);
-        let dpbr = sv.get(BrushSetting::DabsPerBasicRadius).max(0.0);
-        let dps = sv.get(BrushSetting::DabsPerSecond).max(0.0);
+        // libmypaint counts dabs with BASE values for DPAR/DPBR/DPS (it
+        // ignores any input curves on these settings via `BASEVAL(...)`),
+        // re-evaluating the count after each dab against the freshly
+        // advanced state. Mirror that with a per-iteration loop.
+        let dpar = self.get(BrushSetting::DabsPerActualRadius).base_value.max(0.0);
+        let dpbr = self.get(BrushSetting::DabsPerBasicRadius).base_value.max(0.0);
+        let dps = self.get(BrushSetting::DabsPerSecond).base_value.max(0.0);
 
-        // Elliptical brushes whose major axis is perpendicular to motion
-        // expose only their thin minor-axis cross-section along the stroke,
-        // so the dab-per-radius rate has to scale up to keep coverage
-        // continuous. Compute the dab's projection factor in motion-space:
-        //   sqrt(cos²θ_rel + aspect² · sin²θ_rel)
-        // (1.0 when aligned with motion, → aspect when perpendicular).
-        // Without this, calligraphy at "size +N" leaves the visible
-        // slash gaps the user reported.
+        // Elliptical correction: libmypaint computes `count_dabs_to`'s
+        // distance via `sqrt(((dy*cs - dx*sn) * aspect)² + (dy*sn + dx*cs)²)`,
+        // which is just `|motion| * sqrt(cos²(rel) + aspect² · sin²(rel))`
+        // where `rel = angle - motion_angle`. The factor is constant within
+        // a segment because the motion vector's direction doesn't change.
         let aspect = sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
-        let elongation = if aspect > 1.0 && dist > 1e-6 {
-            let motion_angle = dy.atan2(dx);
-            let dab_angle = sv.get(BrushSetting::EllipticalDabAngle).to_radians();
-            let rel = dab_angle - motion_angle;
-            (rel.cos().powi(2) + aspect.powi(2) * rel.sin().powi(2)).sqrt()
+        let dab_angle_rad = sv.get(BrushSetting::EllipticalDabAngle).to_radians();
+
+        let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
+        let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
+        let smudge_radius_log = sv.get(BrushSetting::SmudgeRadiusLog);
+        let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
+        let off_speed = sv.get(BrushSetting::OffsetBySpeed).max(0.0);
+        // Unit vector along motion, used by offset_by_speed.
+        let (ux, uy) = if dist > 1e-6 {
+            (dx / dist, dy / dist)
         } else {
-            1.0
+            (0.0, 0.0)
         };
-        // libmypaint's `count_dabs_to` is `dist_ellipse / radius * DPAR` plus
-        // the basic-radius and per-second terms — i.e. `dabs_per_actual_radius`
-        // means dabs per *radius* of travel, not per diameter. Dividing by
-        // `radius * 2.0` here (as a previous revision did) halved the dab
-        // count, producing visible gaps in libmypaint-thin brushes once the
-        // tilt_declination fix made radii small enough to expose them.
-        // Use the entry-pressure radius here, mirroring libmypaint's first
-        // `count_dabs_to` call (which sees STATE.ACTUAL_RADIUS before any
-        // step has advanced it). Without this, pressure ramps that grow the
-        // radius across the segment emit too few dabs because the
-        // event-final radius is bigger than the path actually deserves.
-        let dist_dabs = if entry_radius > 0.0 {
-            dist * (dpar + dpbr) * elongation / entry_radius
-        } else {
-            0.0
-        };
-        let total_dabs = dist_dabs + dps * dt;
-        let mut accumulated = state.dist_past_dab + total_dabs;
+
+        // Running state for the inner loop. `cur_*` advances toward the
+        // event's smoothed target one step at a time; libmypaint commits
+        // these back into STATE after the final no-draw step below.
+        //
+        // libmypaint distinguishes STATE.X (smoothed cursor, advances toward
+        // the slow-tracked target) from STATE.ACTUAL_X (the dab centre,
+        // additionally lagged behind STATE.X by `slow_tracking_per_dab`).
+        // `cur_x/cur_y` mirror STATE.X and `cur_ax/cur_ay` mirror
+        // STATE.ACTUAL_X — `cur_ax/cur_ay` is where each dab actually lands.
+        let mut cur_x = prev_actual_x;
+        let mut cur_y = prev_actual_y;
+        let mut cur_ax = state.actual_dab_x;
+        let mut cur_ay = state.actual_dab_y;
+        let mut cur_pressure = entry_pressure;
+        let mut dtime_left = dt;
+        let mut dabs_moved = state.dist_past_dab;
+        let target_x = new_actual_x;
+        let target_y = new_actual_y;
+        let slow_per_dab = sv.get(BrushSetting::SlowTrackingPerDab).max(0.0);
+
+        let mut dabs_todo = count_dabs_to(
+            cur_x, cur_y, target_x, target_y,
+            entry_radius, base_radius,
+            dpar, dpbr, dps,
+            dtime_left,
+            dab_angle_rad, aspect,
+        );
         let mut painted = false;
+        let mut dab_inputs = inputs.clone();
 
-        if accumulated >= 1.0 && !below_threshold {
-            let n = accumulated.floor().min(10_000.0) as u32;
-            let dt_per_dab = dt / n.max(1) as f32;
-            let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
-            let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
-            // libmypaint: `smudge_radius = radius * expf(SMUDGE_RADIUS_LOG)`.
-            // The setting is a multiplier in `ln` space, not an absolute size.
-            let smudge_radius = (radius * sv.get(BrushSetting::SmudgeRadiusLog).exp()).max(1.0);
-            let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
-            let off_speed = sv.get(BrushSetting::OffsetBySpeed).max(0.0);
-            // Unit vector along motion, used by offset_by_speed.
-            let (ux, uy) = if dist > 1e-6 {
-                (dx / dist, dy / dist)
+        // The first iteration only consumes `1 - dabs_moved` of a dab so the
+        // accumulator picks up wherever the previous event left off. After
+        // that every iteration is a full unit dab. Mirrors libmypaint's
+        // `step_ddab = (dabs_moved > 0) ? (1 - dabs_moved) : 1.0`.
+        while dabs_moved + dabs_todo >= 1.0 && !below_threshold {
+            let step_ddab = if dabs_moved > 0.0 { 1.0 - dabs_moved } else { 1.0 };
+            dabs_moved = 0.0;
+            let frac = (step_ddab / dabs_todo.max(1e-6)).clamp(0.0, 1.0);
+
+            let step_dx = frac * (target_x - cur_x);
+            let step_dy = frac * (target_y - cur_y);
+            let step_dpressure = frac * (pressure - cur_pressure);
+            let step_dtime = frac * dtime_left;
+
+            cur_x += step_dx;
+            cur_y += step_dy;
+            cur_pressure += step_dpressure;
+            // Lag `cur_ax/cur_ay` behind `cur_x/cur_y` by
+            // `slow_tracking_per_dab`. libmypaint uses
+            // `fac = 1 - exp(-step_ddab / SLOW_TRACKING_PER_DAB)` here, so
+            // larger `slow_per_dab` keeps the dab centre stuck closer to its
+            // previous spot per step.
+            let fac_ax = if slow_per_dab > 1e-3 {
+                1.0 - (-step_ddab / slow_per_dab).exp()
             } else {
-                (0.0, 0.0)
+                1.0
             };
+            cur_ax += (cur_x - cur_ax) * fac_ax;
+            cur_ay += (cur_y - cur_ay) * fac_ax;
 
-            // The K-th dab (1-indexed across the stroke's running accumulator)
-            // lands at `(K - dist_past_dab_entry) / total_dabs` along the
-            // segment, where `dist_past_dab_entry` is the carryover *before*
-            // we added total_dabs. Using `accumulated - n` (the post-emit
-            // remainder) instead — as a previous revision did — placed dabs
-            // outside [0, 1] of the segment and produced visible gaps at
-            // event boundaries on real brushes (calligraphy, marker, …).
-            let entry_carry = state.dist_past_dab;
-            // Per-dab inputs: clone the event-level vector so we only touch
-            // the values that interpolate (pressure for now; speed/tilt are
-            // approximated as constant across the segment).
-            let mut dab_inputs = inputs.clone();
-            for i in 1..=n {
-                let frac = (i as f32 - entry_carry) / total_dabs.max(1e-6);
-                let mut px = prev_actual_x + dx * frac;
-                let mut py = prev_actual_y + dy * frac;
+            // Per-step speed slowness (see libmypaint's
+            // `update_states_and_setting_values`).
+            let fac1 = if slow1 > 1e-3 {
+                1.0 - (-step_dtime / slow1).exp()
+            } else {
+                1.0
+            };
+            let fac2 = if slow2 > 1e-3 {
+                1.0 - (-step_dtime / slow2).exp()
+            } else {
+                1.0
+            };
+            state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
+            state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
 
-                // libmypaint advances STATE.PRESSURE inside the dab loop by
-                // `step_dpressure = frac * (pressure - STATE.PRESSURE)`. We
-                // achieve the same by interpolating from `entry_pressure` to
-                // the event's pressure along the segment fraction.
-                let dab_pressure =
-                    entry_pressure + (pressure - entry_pressure) * frac.clamp(0.0, 1.0);
-                dab_inputs.set(BrushInput::Pressure, dab_pressure);
+            dab_inputs.set(BrushInput::Pressure, cur_pressure);
+            dab_inputs.set(
+                BrushInput::Speed1,
+                speed_input(
+                    state.norm_speed1_slow,
+                    self.get(BrushSetting::Speed1Gamma).base_value,
+                ),
+            );
+            dab_inputs.set(
+                BrushInput::Speed2,
+                speed_input(
+                    state.norm_speed2_slow,
+                    self.get(BrushSetting::Speed2Gamma).base_value,
+                ),
+            );
+            dab_inputs.set(BrushInput::Random, state.random_input);
+            let dab_sv = evaluate(self, &dab_inputs);
+            let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
+            state.actual_radius = dab_radius;
 
-                // Per-dab speed smoothing: libmypaint runs the slowness
-                // low-pass once per dab using `step_dtime = dt / n` so the
-                // first dab inherits only a sliver of the event's raw
-                // speed. Matching that means re-evaluating `speedN_input`
-                // here against the freshly advanced `norm_speedN_slow`.
-                let step_dtime = dt_per_dab;
-                let fac1 = if slow1 > 1e-3 {
-                    1.0 - (-step_dtime / slow1).exp()
-                } else {
-                    1.0
-                };
-                let fac2 = if slow2 > 1e-3 {
-                    1.0 - (-step_dtime / slow2).exp()
-                } else {
-                    1.0
-                };
-                state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
-                state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
-                dab_inputs.set(
-                    BrushInput::Speed1,
-                    speed_input(
-                        state.norm_speed1_slow,
-                        self.get(BrushSetting::Speed1Gamma).base_value,
-                    ),
-                );
-                dab_inputs.set(
-                    BrushInput::Speed2,
-                    speed_input(
-                        state.norm_speed2_slow,
-                        self.get(BrushSetting::Speed2Gamma).base_value,
-                    ),
-                );
-
-                // libmypaint feeds the current `random_input` into the
-                // setting evaluation for this dab — see
-                // `INPUT(RANDOM) = self->random_input;` inside
-                // `update_states_and_setting_values`.
-                dab_inputs.set(BrushInput::Random, state.random_input);
-                let dab_sv = evaluate(self, &dab_inputs);
-                let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
-                state.actual_radius = dab_radius;
-
-                if off_random > 0.0 {
-                    // libmypaint scales the jitter by *base_radius* (the
-                    // brush's `exp(BASE radius_logarithmic)`) rather than the
-                    // current dab's radius, so the speckle pattern stays
-                    // wide even when pressure squashes the dab radius down.
-                    // Using `dab_radius` here previously made low-pressure
-                    // dabs cluster near the path instead of spreading like
-                    // libmypaint's charcoal does at the start of a stroke.
-                    px += state.rng.next_gauss() * off_random * base_radius;
-                    py += state.rng.next_gauss() * off_random * base_radius;
-                }
-                if off_speed > 0.0 {
-                    // libmypaint pushes the dab along the motion direction
-                    // proportional to the slowed speed, normalised so that
-                    // unit setting × unit-radius brush gives a one-radius
-                    // displacement at moderate speeds.
-                    let mag = (state.norm_speed1_slow * 0.04).clamp(-4.0, 4.0);
-                    px += ux * off_speed * dab_radius * mag;
-                    py += uy * off_speed * dab_radius * mag;
-                }
-
-                // Smudge: refresh bucket from canvas, weighted by smudge_length.
-                if smudge_amt > 0.0 {
-                    let sample = surface.get_color(px, py, smudge_radius);
-                    let fac = smudge_length; // 1.0 = keep bucket, 0.0 = always refresh
-                    state.smudge_ra = state.smudge_ra * fac + sample.r * sample.a * (1.0 - fac);
-                    state.smudge_ga = state.smudge_ga * fac + sample.g * sample.a * (1.0 - fac);
-                    state.smudge_ba = state.smudge_ba * fac + sample.b * sample.a * (1.0 - fac);
-                    state.smudge_a = state.smudge_a * fac + sample.a * (1.0 - fac);
-                }
-
-                // Color drift between dabs (change_color_*).
-                drift_color(state, &dab_sv, dt_per_dab);
-
-                let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt);
-                if surface.draw_dab(&dab) {
-                    painted = true;
-                }
-                state.last_dab_x = dab.x;
-                state.last_dab_y = dab.y;
-                // libmypaint refreshes `random_input` once per dab, *after*
-                // drawing — see `self->random_input = rng_double_next(...)`
-                // at the bottom of the loop in `mypaint_brush_stroke_to`.
-                state.random_input = state.rng.next_unit();
+            let mut px = cur_ax;
+            let mut py = cur_ay;
+            if off_random > 0.0 {
+                px += state.rng.next_gauss() * off_random * base_radius;
+                py += state.rng.next_gauss() * off_random * base_radius;
             }
-            accumulated -= n as f32;
+            if off_speed > 0.0 {
+                let mag = (state.norm_speed1_slow * 0.04).clamp(-4.0, 4.0);
+                px += ux * off_speed * dab_radius * mag;
+                py += uy * off_speed * dab_radius * mag;
+            }
+
+            if smudge_amt > 0.0 {
+                let smudge_radius =
+                    (dab_radius * smudge_radius_log.exp()).max(1.0);
+                let sample = surface.get_color(px, py, smudge_radius);
+                let fac = smudge_length;
+                state.smudge_ra = state.smudge_ra * fac + sample.r * sample.a * (1.0 - fac);
+                state.smudge_ga = state.smudge_ga * fac + sample.g * sample.a * (1.0 - fac);
+                state.smudge_ba = state.smudge_ba * fac + sample.b * sample.a * (1.0 - fac);
+                state.smudge_a = state.smudge_a * fac + sample.a * (1.0 - fac);
+            }
+
+            drift_color(state, &dab_sv, step_dtime);
+
+            let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt);
+            if surface.draw_dab(&dab) {
+                painted = true;
+            }
+            state.last_dab_x = dab.x;
+            state.last_dab_y = dab.y;
+            // libmypaint refreshes `random_input` once per dab, *after*
+            // drawing.
+            state.random_input = state.rng.next_unit();
+
+            dtime_left = (dtime_left - step_dtime).max(0.0);
+            dabs_todo = count_dabs_to(
+                cur_x, cur_y, target_x, target_y,
+                dab_radius, base_radius,
+                dpar, dpbr, dps,
+                dtime_left,
+                dab_angle_rad, aspect,
+            );
         }
-        state.dist_past_dab = accumulated;
+
+        // Final no-draw step: libmypaint advances STATE one last time to the
+        // event's input pressure/position/dtime so the next event's
+        // `count_dabs_to` starts from the right place. We don't need to
+        // recompute settings here — they only matter for the per-dab work
+        // we've already done — but the speed slowness must absorb the
+        // remaining `dtime_left` and `dabs_moved` must carry the fractional
+        // leftover.
+        if dtime_left > 0.0 {
+            let fac1 = if slow1 > 1e-3 {
+                1.0 - (-dtime_left / slow1).exp()
+            } else {
+                1.0
+            };
+            let fac2 = if slow2 > 1e-3 {
+                1.0 - (-dtime_left / slow2).exp()
+            } else {
+                1.0
+            };
+            state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
+            state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
+        }
+        state.dist_past_dab = dabs_moved + dabs_todo;
 
         // --- Commit event state ---------------------------------------------
         state.last_event_x = x;
@@ -409,6 +428,8 @@ impl Brush {
         state.last_event_time += dtime;
         state.actual_x = new_actual_x;
         state.actual_y = new_actual_y;
+        state.actual_dab_x = cur_ax;
+        state.actual_dab_y = cur_ay;
         if painted {
             state.stroke_total_painting_time += dtime;
         } else {
@@ -619,6 +640,51 @@ fn build_dab(
 /// is `ln(gamma)`; with `gamma`, `m`, and `q` derived to anchor the curve at
 /// `(speed=45, value=0.5)` with slope `0.015`, the resulting input is
 /// `log(gamma + speed) * m + q`.
+/// Port of libmypaint's `count_dabs_to` (`legacy_dab_count`): dabs to draw
+/// to reach `(tgt_x, tgt_y)` over `dt_left` seconds, given the current
+/// `actual_radius`. Mirrors the elliptical-distance correction libmypaint
+/// applies via `STATE.ACTUAL_ELLIPTICAL_DAB_RATIO` so thin brushes still
+/// receive enough dabs to cover their minor-axis cross-section.
+#[allow(clippy::too_many_arguments)]
+fn count_dabs_to(
+    cur_x: f32,
+    cur_y: f32,
+    tgt_x: f32,
+    tgt_y: f32,
+    actual_radius: f32,
+    base_radius: f32,
+    dpar: f32,
+    dpbr: f32,
+    dps: f32,
+    dt_left: f32,
+    dab_angle_rad: f32,
+    aspect: f32,
+) -> f32 {
+    let dx = tgt_x - cur_x;
+    let dy = tgt_y - cur_y;
+    let dist = if aspect > 1.0 {
+        let cs = dab_angle_rad.cos();
+        let sn = dab_angle_rad.sin();
+        let yyr = (dy * cs - dx * sn) * aspect;
+        let xxr = dy * sn + dx * cs;
+        (yyr * yyr + xxr * xxr).sqrt()
+    } else {
+        (dx * dx + dy * dy).sqrt()
+    };
+    let num_actual = if actual_radius > 0.0 {
+        dist / actual_radius * dpar
+    } else {
+        0.0
+    };
+    let num_basic = if base_radius > 0.0 {
+        dist / base_radius * dpbr
+    } else {
+        0.0
+    };
+    let num_time = dt_left.max(0.0) * dps;
+    num_actual + num_basic + num_time
+}
+
 fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
     let gamma = gamma_log.exp();
     let fix1 = 45.0_f32;
@@ -686,14 +752,17 @@ mod tests {
 
     #[test]
     fn moves_emit_proportional_dabs() {
+        // 20 px / exp(1) ≈ 20 / 2.718 = 7.36 radii of travel. With DPAR=2
+        // that's ~14.7 dabs per `count_dabs_to`. libmypaint's per-iteration
+        // re-evaluation lands the integer count somewhere in this band.
         let brush = make_brush(1.0, 2.0);
         let mut state = BrushState::default();
         let mut surf = CountingSurface { count: 0 };
         brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
         brush.stroke_to(&mut state, &mut surf, 20.0, 0.0, 1.0, 0.0, 0.0, 0.01);
         assert!(
-            (8..=11).contains(&surf.count),
-            "expected ~10 dabs, got {}",
+            (12..=16).contains(&surf.count),
+            "expected ~14 dabs, got {}",
             surf.count
         );
     }
@@ -814,13 +883,12 @@ mod tests {
     }
 
     #[test]
-    fn tilt_declination_is_zero_when_pen_upright() {
-        let brush = make_brush(1.0, 2.0);
-        let mut state = BrushState::default();
-        let mut surf = CountingSurface { count: 0 };
-        brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
-        brush.stroke_to(&mut state, &mut surf, 10.0, 0.0, 1.0, 0.0, 0.0, 0.01);
-        // We don't store tilt directly; check via a brush that maps it.
+    fn tilt_declination_follows_libmypaint_convention() {
+        // libmypaint: `tilt_declination = 90` when the pen is straight up,
+        // dropping to ~30 at the steepest tilt (`90 - hypot(x, y) * 60`).
+        // With a curve mapping declination 0 → 0 and 90 → 1, the upright
+        // pose feeds the *larger* contribution to the radius curve, so the
+        // tilted stroke should end up *smaller* than the upright one.
         let mut tilt_brush = make_brush(1.0, 2.0);
         tilt_brush.set(
             BrushSetting::Radius,
@@ -845,8 +913,8 @@ mod tests {
         let r_tilted = s2.actual_radius;
 
         assert!(
-            r_tilted > r_upright,
-            "tilted pen should map to bigger radius via declination: {r_tilted} <= {r_upright}"
+            r_upright > r_tilted,
+            "upright pen has higher declination → bigger radius via curve: {r_upright} <= {r_tilted}"
         );
     }
 

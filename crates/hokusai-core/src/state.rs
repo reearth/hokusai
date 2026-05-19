@@ -8,6 +8,11 @@ pub struct BrushState {
     // Smoothed input position.
     pub actual_x: f32,
     pub actual_y: f32,
+    /// libmypaint's `STATE.ACTUAL_X` / `STATE.ACTUAL_Y` — the dab centre,
+    /// which is lagged behind the slow-tracked cursor (`actual_x` here) by
+    /// `slow_tracking_per_dab`. The two coincide when that setting is 0.
+    pub actual_dab_x: f32,
+    pub actual_dab_y: f32,
 
     // Last raw input event (for speed/direction calculation).
     pub last_event_x: f32,
@@ -70,6 +75,8 @@ impl BrushState {
         Self {
             actual_x: 0.0,
             actual_y: 0.0,
+            actual_dab_x: 0.0,
+            actual_dab_y: 0.0,
             last_event_x: 0.0,
             last_event_y: 0.0,
             last_event_time: 0.0,
