@@ -188,6 +188,7 @@ fn build_dab(
         posterize: sv.get(BrushSetting::Posterize).clamp(0.0, 1.0),
         posterize_num: sv.get(BrushSetting::PosterizeNum).max(1.0),
         paint: sv.get(BrushSetting::Paint).clamp(0.0, 1.0),
+        anti_aliasing: sv.get(BrushSetting::AntiAliasing).clamp(0.0, 1.0),
     }
 }
 

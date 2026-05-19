@@ -24,6 +24,7 @@ fn red_dab(x: f32, y: f32, radius: f32) -> Dab {
         posterize: 0.0,
         posterize_num: 1.0,
         paint: 0.0,
+        anti_aliasing: 0.0,
     }
 }
 
@@ -77,6 +78,53 @@ fn eraser_reduces_alpha() {
     s.draw_dab(&eraser);
     let after = s.tile(0, 0).unwrap()[32][32][3];
     assert!(after < before, "alpha should decrease: {before} -> {after}");
+}
+
+#[test]
+fn lock_alpha_paints_only_inside_existing_alpha() {
+    let mut s = MemSurface::new();
+    // Lay down a soft red blob.
+    s.draw_dab(&red_dab(32.0, 32.0, 6.0));
+    // Now paint blue across the area with lock_alpha = 1.
+    let mut blue = red_dab(32.0, 32.0, 6.0);
+    blue.color = RgbaF32::new(0.0, 0.0, 1.0, 1.0);
+    blue.lock_alpha = 1.0;
+    let before_alpha = s.tile(0, 0).unwrap()[32][32][3];
+    s.draw_dab(&blue);
+    let after = s.tile(0, 0).unwrap()[32][32];
+    // Center should now have blue but alpha must be unchanged.
+    assert!(after[2] > 0, "blue painted");
+    assert_eq!(after[3], before_alpha, "alpha must be locked");
+
+    // A point that was fully transparent before stays transparent.
+    let untouched = s.tile(0, 0).unwrap()[5][5];
+    assert_eq!(untouched, [0, 0, 0, 0]);
+}
+
+#[test]
+fn anti_aliasing_softens_hard_edge() {
+    // Solid-disk dab (hardness=1) with AA off: rr ≤ 1 is fully opaque,
+    // rr > 1 is fully transparent — so the pixel just outside the radius
+    // is 0. With AA on, that pixel gets a partial fade.
+    let mut without_aa = MemSurface::new();
+    let mut with_aa = MemSurface::new();
+
+    let mut dab = red_dab(32.0, 32.0, 5.0);
+    dab.hardness = 1.0;
+    without_aa.draw_dab(&dab);
+
+    dab.anti_aliasing = 1.0;
+    with_aa.draw_dab(&dab);
+
+    // Pixel (37, 32) is ~5.5 px from dab center — just outside the 5-px radius
+    // but inside the AA feather band when aa is enabled.
+    let outside_off = without_aa.tile(0, 0).map(|t| t[32][37][3]).unwrap_or(0);
+    let outside_on = with_aa.tile(0, 0).map(|t| t[32][37][3]).unwrap_or(0);
+    assert_eq!(outside_off, 0, "no AA: outside is fully transparent");
+    assert!(
+        outside_on > 0,
+        "AA: outside pixel should have some coverage, got {outside_on}"
+    );
 }
 
 #[test]

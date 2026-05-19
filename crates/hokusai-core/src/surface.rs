@@ -23,6 +23,7 @@ pub struct Dab {
     pub posterize: f32,
     pub posterize_num: f32,
     pub paint: f32,
+    pub anti_aliasing: f32,
 }
 
 pub trait TiledSurface {

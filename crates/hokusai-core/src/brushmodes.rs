@@ -65,6 +65,9 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let cs = angle.cos();
     let sn = angle.sin();
     let inv_r2 = 1.0 / (radius * radius);
+    // Anti-aliasing band in rr-space (rr is r² normalized). ~1 px feather
+    // at the dab edge when `anti_aliasing` is 1.0, scaled by radius.
+    let aa_band = (dab.anti_aliasing.clamp(0.0, 1.0) * 2.0) / radius;
 
     // Conservative AABB: enlarge by aspect_ratio so the rotated ellipse fits.
     let r_ext = radius * aspect + 1.0;
@@ -123,6 +126,10 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 hardness,
                 opaque_f,
                 alpha_eraser_f,
+                aa_band,
+                dab.lock_alpha.clamp(0.0, 1.0),
+                dab.posterize.clamp(0.0, 1.0),
+                dab.posterize_num.max(1.0),
                 src_r,
                 src_g,
                 src_b,
@@ -152,44 +159,107 @@ fn paint_into_tile(
     hardness: f32,
     opaque: f32,
     alpha_eraser: f32,
+    aa_band: f32,
+    lock_alpha: f32,
+    posterize: f32,
+    posterize_num: f32,
     src_r: u32,
     src_g: u32,
     src_b: u32,
 ) -> bool {
     let mut painted = false;
+    let aa_edge = 1.0 + aa_band;
+    let do_posterize = posterize > 0.0;
+    let pnum = posterize_num.round().max(1.0);
+    let posterize_fix15 = (posterize * FIX15_ONE as f32) as u32;
+
     for ly in ly0..=ly1 {
         let py = (oy + ly as i32) as f32;
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
             let rr = rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2);
-            if rr > 1.0 {
+            if rr >= aa_edge {
                 continue;
             }
-            let opa = opa_at(rr, hardness) * opaque;
+            // Smooth the outer aa_band-wide ring linearly from full opa→0.
+            let mut opa = if aa_band > 0.0 && rr > 1.0 - aa_band {
+                let inner = opa_at((1.0 - aa_band).max(0.0), hardness);
+                inner * ((aa_edge - rr) / (2.0 * aa_band)).clamp(0.0, 1.0)
+            } else if rr <= 1.0 {
+                opa_at(rr, hardness)
+            } else {
+                0.0
+            };
+            opa *= opaque;
             if opa <= 0.0 {
                 continue;
             }
 
             // fix15 mask values.
             let mask = (opa.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-            let opa_alpha = fix15::mul(mask, (alpha_eraser * FIX15_ONE as f32) as u32);
+            let opa_alpha_raw = fix15::mul(mask, (alpha_eraser * FIX15_ONE as f32) as u32);
             let inv_mask = FIX15_ONE - mask;
 
             let dst = &mut tile[ly][lx];
-            // dst' = dst * (1 - mask) + src_premul * opa_alpha
-            // where src_premul = (src_r, src_g, src_b, 1)
             let dr = dst[0] as u32;
             let dg = dst[1] as u32;
             let db = dst[2] as u32;
             let da = dst[3] as u32;
-            dst[0] = blend(dr, inv_mask, src_r, opa_alpha);
-            dst[1] = blend(dg, inv_mask, src_g, opa_alpha);
-            dst[2] = blend(db, inv_mask, src_b, opa_alpha);
-            dst[3] = blend(da, inv_mask, FIX15_ONE, opa_alpha);
+
+            // Lock alpha: when set, the dab is masked by the existing alpha
+            // (so only previously-painted areas get coloured) and dst.a is
+            // unchanged. Blend smoothly via `lock_alpha`.
+            let (color_opa_alpha, write_alpha) = if lock_alpha > 0.0 {
+                let locked = fix15::mul(opa_alpha_raw, da);
+                let blended = lerp_fix15(opa_alpha_raw, locked, lock_alpha);
+                (blended, lock_alpha < 1.0)
+            } else {
+                (opa_alpha_raw, true)
+            };
+
+            dst[0] = blend(dr, inv_mask, src_r, color_opa_alpha);
+            dst[1] = blend(dg, inv_mask, src_g, color_opa_alpha);
+            dst[2] = blend(db, inv_mask, src_b, color_opa_alpha);
+            if write_alpha {
+                dst[3] = blend(da, inv_mask, FIX15_ONE, opa_alpha_raw);
+            }
+
+            // Posterize: snap each channel toward (round(c * N) / N) by
+            // `posterize` amount. Applied in straight alpha — convert,
+            // quantize, convert back.
+            if do_posterize {
+                posterize_pixel(dst, pnum, posterize_fix15);
+                painted = true;
+                continue;
+            }
             painted = true;
         }
     }
     painted
+}
+
+/// Linear interpolation in fix15 space: `a*(1-t) + b*t`.
+#[inline]
+fn lerp_fix15(a: u32, b: u32, t: f32) -> u32 {
+    let t_fix = (t.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
+    fix15::mul(a, FIX15_ONE - t_fix) + fix15::mul(b, t_fix)
+}
+
+/// Posterize `pixel` toward `pnum` quantization levels by `amount` (fix15).
+fn posterize_pixel(pixel: &mut [u16; 4], pnum: f32, amount: u32) {
+    let a = pixel[3] as f32 / FIX15_ONE as f32;
+    if a <= 0.0 {
+        return;
+    }
+    for ch in 0..3 {
+        let c_premul = pixel[ch] as f32 / FIX15_ONE as f32;
+        let c_straight = (c_premul / a).clamp(0.0, 1.0);
+        let q = (c_straight * pnum).round() / pnum;
+        let blended = c_straight * (1.0 - amount as f32 / FIX15_ONE as f32)
+            + q * (amount as f32 / FIX15_ONE as f32);
+        let new_premul = (blended * a).clamp(0.0, 1.0);
+        pixel[ch] = (new_premul * FIX15_ONE as f32) as u16;
+    }
 }
 
 /// `(dst * inv_mask + src_premul_channel * opa_alpha) >> 15` with libmypaint's
