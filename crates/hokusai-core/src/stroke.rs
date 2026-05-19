@@ -85,8 +85,33 @@ impl Brush {
             state.smudge_a = 0.0;
             state.norm_speed1_slow = 0.0;
             state.norm_speed2_slow = 0.0;
+            state.norm_dx_slow = 0.0;
+            state.norm_dy_slow = 0.0;
+            state.direction_dx = 0.0;
+            state.direction_dy = 0.0;
+            state.direction_angle_dx = 0.0;
+            state.direction_angle_dy = 0.0;
             state.stroke_total_painting_time = 0.0;
             state.stroke_current_idling_time = 0.0;
+            state.stroke_state = 0.0;
+            state.stroke_started = false;
+            state.custom_input = 0.0;
+            state.flip = -1.0;
+            // Seed the smoothed tilt state at the event's input so the
+            // first dab doesn't lerp away from a stale value.
+            let m = (xtilt * xtilt + ytilt * ytilt).sqrt().min(1.0);
+            state.ascension = if xtilt == 0.0 && ytilt == 0.0 {
+                0.0
+            } else {
+                (-xtilt).atan2(ytilt).to_degrees()
+            };
+            state.declination = if xtilt == 0.0 && ytilt == 0.0 {
+                90.0
+            } else {
+                90.0 - m * 60.0
+            };
+            state.declination_x = xtilt * 60.0;
+            state.declination_y = ytilt * 60.0;
             state.started = true;
             return false;
         }
@@ -350,6 +375,21 @@ impl Brush {
             cur_x += step_dx;
             cur_y += step_dy;
             cur_pressure += step_dpressure;
+
+            // Advance tilt state toward the event's target. libmypaint
+            // uses `frac * smallest_angular_difference(STATE.ASCENSION,
+            // tilt_ascension)` for the ascension delta so a 359° → 1°
+            // event lags by ~2°, not ~358°. Declination is a plain
+            // additive delta. With `xtilt = ytilt = 0` the targets sit
+            // at the libmypaint defaults (ascension 0, declination 90).
+            let step_ascension = frac * smallest_angular_diff(state.ascension, tilt_ascension);
+            let step_declination = frac * (tilt_declination - state.declination);
+            let step_decl_x = frac * (xtilt * 60.0 - state.declination_x);
+            let step_decl_y = frac * (ytilt * 60.0 - state.declination_y);
+            state.ascension += step_ascension;
+            state.declination += step_declination;
+            state.declination_x += step_decl_x;
+            state.declination_y += step_decl_y;
             // Lag `cur_ax/cur_ay` behind `cur_x/cur_y` by
             // `slow_tracking_per_dab`. libmypaint uses
             // `fac = 1 - exp(-step_ddab / SLOW_TRACKING_PER_DAB)` here, so
@@ -471,6 +511,22 @@ impl Brush {
                 ),
             );
             dab_inputs.set(BrushInput::Random, state.random_input);
+
+            // Smoothed tilt inputs: libmypaint feeds the lagged STATE
+            // values into INPUT(TILT_*) and INPUT(ATTACK_ANGLE) at the
+            // per-dab evaluation. With viewrotation = 0 the ascension
+            // wraps into `(-180, 180]` exactly like libmypaint's
+            // `mod_arith(... + 180, 360) - 180`.
+            let asc_wrapped = (state.ascension + 180.0).rem_euclid(360.0) - 180.0;
+            dab_inputs.set(BrushInput::TiltDeclination, state.declination);
+            dab_inputs.set(BrushInput::TiltAscension, asc_wrapped);
+            dab_inputs.set(BrushInput::TiltDeclinationX, state.declination_x);
+            dab_inputs.set(BrushInput::TiltDeclinationY, state.declination_y);
+            dab_inputs.set(
+                BrushInput::AttackAngle,
+                attack_angle(state.ascension, dx_raw, dy_raw),
+            );
+
             // Custom input: feed the previous-dab smoothed value so the
             // curve in `evaluate` below can reference it (libmypaint pushes
             // the *prior* STATE.CUSTOM_INPUT into INPUT(CUSTOM) and only
@@ -554,7 +610,7 @@ impl Brush {
                 // ASCENSION isn't tracked per-dab yet (libmypaint smooths
                 // it like position); use the event-level tilt_ascension
                 // we already computed.
-                tilt_ascension,
+                state.ascension,
             );
             px += off_x;
             py += off_y;
@@ -977,6 +1033,16 @@ fn directional_offsets(
     ((dx * scale).clamp(-LIM, LIM), (dy * scale).clamp(-LIM, LIM))
 }
 
+/// Smallest signed angular difference `b - a` (in degrees), wrapped to
+/// `(-180, 180]`. Used to advance `STATE.ASCENSION` / `BARREL_ROTATION`
+/// toward their event targets without taking the long way around the
+/// circle on wrap-overs.
+fn smallest_angular_diff(a: f32, b: f32) -> f32 {
+    let mut d = b - a;
+    d = (d + 180.0).rem_euclid(360.0) - 180.0;
+    d
+}
+
 /// libmypaint's `INPUT(ATTACK_ANGLE)`: the smallest angular difference
 /// between the pen's ascension direction and the stroke direction (offset
 /// by 90°), both in degrees, wrapped to `(-180, 180]`.
@@ -1217,6 +1283,7 @@ mod tests {
                     input: BrushInput::TiltDeclination,
                     points: vec![(0.0, 0.0), (90.0, 1.0)],
                 }],
+                unknown_inputs: Default::default(),
             },
         );
         let mut s1 = BrushState::default();

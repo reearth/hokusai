@@ -52,8 +52,15 @@ pub trait TiledSurface {
         None
     }
 
-    /// Average color within `radius` of `(x, y)`. Used by smudge / color picker.
-    /// Backends that don't implement `tile_lookup` will get transparent.
+    /// Average color within `radius` of `(x, y)`. Used by smudge / color
+    /// picker.
+    ///
+    /// The default reads through [`Self::tile_lookup`] and silently returns
+    /// a transparent result for backends that don't implement it. Backends
+    /// without raw tile access (e.g. a single `Pixmap`-backed surface)
+    /// can override and forward to
+    /// [`crate::brushmodes::get_color_via_sample`] with their own
+    /// per-pixel reader.
     fn get_color(&self, x: f32, y: f32, radius: f32) -> RgbaF32 {
         crate::brushmodes::get_color_default(self, x, y, radius)
     }

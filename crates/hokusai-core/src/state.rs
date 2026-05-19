@@ -50,6 +50,20 @@ pub struct BrushState {
     /// `brush_reset` initialises it to `-1` so the first dab toggles to
     /// `+1` — matching the upstream comment.
     pub flip: f32,
+    /// libmypaint's `STATE.ASCENSION` — the dab-by-dab smoothed ascension
+    /// angle (degrees). Advanced inside the dab loop by `frac *
+    /// smallest_angular_difference(STATE.ASCENSION, target_ascension)`
+    /// so directional offsets and `INPUT(TILT_ASCENSION)` see a lagged
+    /// pen-rotation rather than a hard jump on each event.
+    pub ascension: f32,
+    /// libmypaint's `STATE.DECLINATION` — same idea as `ascension`, for
+    /// the pen's tilt declination.
+    pub declination: f32,
+    /// libmypaint's `STATE.DECLINATIONX` / `DECLINATIONY`. Tilt
+    /// components in degrees (`xtilt * 60`, `ytilt * 60`), smoothed
+    /// per-dab so the per-axis input curves can ride on them.
+    pub declination_x: f32,
+    pub declination_y: f32,
 
     // Stroke accounting.
     pub stroke_total_painting_time: f64,
@@ -124,6 +138,11 @@ impl BrushState {
             direction_angle_dy: 0.0,
             custom_input: 0.0,
             flip: -1.0,
+            ascension: 0.0,
+            // libmypaint defaults declination to 90° (pen straight up).
+            declination: 90.0,
+            declination_x: 0.0,
+            declination_y: 0.0,
             stroke_total_painting_time: 0.0,
             stroke_current_idling_time: 0.0,
             stroke_state: 0.0,

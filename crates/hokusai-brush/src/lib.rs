@@ -96,11 +96,19 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
         let mut sv = SettingValue {
             base_value: rs.base_value,
             inputs: Vec::with_capacity(rs.inputs.len()),
+            unknown_inputs: BTreeMap::new(),
         };
         for (iname, points) in rs.inputs {
             let Some(input) = BrushInput::from_cname(&iname) else {
-                // TODO: preserve unknown inputs inside a known setting.
-                // Rare in practice — punted for now.
+                // Stash inputs hokusai doesn't recognise so the
+                // `to_string_pretty` path can put them back. They don't
+                // participate in evaluation — newer brush packs that ship
+                // exotic inputs will lose dynamics until those inputs are
+                // implemented, but the JSON survives a round trip.
+                sv.unknown_inputs.insert(
+                    iname,
+                    points.into_iter().map(|p| (p[0], p[1])).collect(),
+                );
                 continue;
             };
             sv.inputs.push(InputMapping {
@@ -120,11 +128,11 @@ pub fn to_string_pretty(brush: &Brush) -> Result<String, Error> {
     for (i, sv) in brush.settings().iter().enumerate() {
         // Skip wholly-default settings to keep output compact, matching
         // libmypaint's behaviour of only writing non-default keys.
-        if sv.base_value == 0.0 && sv.inputs.is_empty() {
+        if sv.base_value == 0.0 && sv.inputs.is_empty() && sv.unknown_inputs.is_empty() {
             continue;
         }
         let setting = BrushSetting::ALL[i];
-        let inputs = sv
+        let mut inputs: BTreeMap<String, Vec<[f32; 2]>> = sv
             .inputs
             .iter()
             .map(|m| {
@@ -134,6 +142,12 @@ pub fn to_string_pretty(brush: &Brush) -> Result<String, Error> {
                 )
             })
             .collect();
+        for (iname, pts) in &sv.unknown_inputs {
+            inputs.insert(
+                iname.clone(),
+                pts.iter().map(|(x, y)| [*x, *y]).collect(),
+            );
+        }
         settings.insert(
             setting.cname().to_string(),
             RawSetting {
@@ -217,6 +231,35 @@ mod tests {
         let out = to_string_pretty(&b).unwrap();
         let b2 = from_str(&out).unwrap();
         assert_eq!(b.unknown_settings, b2.unknown_settings);
+    }
+
+    #[test]
+    fn unknown_inputs_inside_known_settings_roundtrip() {
+        // `opaque` is a hokusai-known setting, but `future_input` is not
+        // a known input. Round-tripping must keep the future_input curve.
+        let json = r#"{
+            "version": 3,
+            "settings": {
+                "opaque": {
+                    "base_value": 0.5,
+                    "inputs": {
+                        "pressure": [[0.0, 0.0], [1.0, 1.0]],
+                        "future_input": [[0.0, 0.25], [1.0, -0.25]]
+                    }
+                }
+            }
+        }"#;
+        let b = from_str(json).unwrap();
+        let opa = b.get(BrushSetting::Opaque);
+        assert_eq!(opa.inputs.len(), 1, "known input parsed");
+        assert_eq!(opa.unknown_inputs.len(), 1, "unknown input stashed");
+        let pts = opa.unknown_inputs.get("future_input").unwrap();
+        assert_eq!(pts.len(), 2);
+        assert!((pts[1].1 - (-0.25)).abs() < 1e-6);
+
+        let out = to_string_pretty(&b).unwrap();
+        let b2 = from_str(&out).unwrap();
+        assert_eq!(b.get(BrushSetting::Opaque), b2.get(BrushSetting::Opaque));
     }
 
     #[test]

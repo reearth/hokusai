@@ -41,6 +41,7 @@ fn make_brush() -> Brush {
                 input: BrushInput::Pressure,
                 points: vec![(0.0, 0.0), (1.0, 1.0)],
             }],
+            ..Default::default()
         },
     );
     // Radius also responds to pressure: ±0.5 in log2 → ~1.4× / 0.7× swing.

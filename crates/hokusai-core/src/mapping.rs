@@ -53,6 +53,12 @@ impl InputMapping {
 pub struct SettingValue {
     pub base_value: f32,
     pub inputs: Vec<InputMapping>,
+    /// Input mappings on this setting whose input name hokusai doesn't
+    /// know about. Kept verbatim so a `.myb` parse + serialize cycle
+    /// stays lossless even for brush packs that use inputs hokusai
+    /// hasn't ported yet (or third-party extensions). The mapping is
+    /// not consulted during evaluation.
+    pub unknown_inputs: std::collections::BTreeMap<String, Vec<(f32, f32)>>,
 }
 
 impl SettingValue {
@@ -60,6 +66,7 @@ impl SettingValue {
         Self {
             base_value: v,
             inputs: Vec::new(),
+            unknown_inputs: std::collections::BTreeMap::new(),
         }
     }
 }

@@ -102,6 +102,7 @@ mod tests {
                     input: BrushInput::Pressure,
                     points: vec![(0.0, 0.0), (1.0, 0.5)],
                 }],
+                ..Default::default()
             },
         );
         let mut inputs = InputValues::new();
@@ -127,6 +128,7 @@ mod tests {
                         points: vec![(0.0, 0.0), (4.0, -0.5)],
                     },
                 ],
+                ..Default::default()
             },
         );
         let mut inputs = InputValues::new();

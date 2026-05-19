@@ -340,6 +340,64 @@ fn clamp_color(c: RgbaF32) -> RgbaF32 {
     }
 }
 
+/// Backend-agnostic version of [`get_color_default`]: takes a
+/// `sample(px, py)` closure that returns a single fix15 RGBA pixel
+/// (`[r, g, b, a]`, premultiplied, linear sRGB). Backends that can't
+/// hand out raw `TilePixels` (e.g. a `Pixmap`-only surface) can
+/// override `TiledSurface::get_color` to delegate here, passing a
+/// closure that reads from their own buffer.
+///
+/// Coordinates outside the painted area should be reported as fully
+/// transparent (`[0, 0, 0, 0]`).
+pub fn get_color_via_sample<F>(x: f32, y: f32, radius: f32, sample: F) -> RgbaF32
+where
+    F: Fn(i32, i32) -> [u16; 4],
+{
+    let radius = radius.max(0.5);
+    let inv_r2 = 1.0 / (radius * radius);
+    let r_ext = radius + 1.0;
+    let x0 = (x - r_ext).floor() as i32;
+    let y0 = (y - r_ext).floor() as i32;
+    let x1 = (x + r_ext).ceil() as i32;
+    let y1 = (y + r_ext).ceil() as i32;
+
+    let mut sum_r = 0.0f32;
+    let mut sum_g = 0.0f32;
+    let mut sum_b = 0.0f32;
+    let mut sum_a = 0.0f32;
+    let mut sum_w = 0.0f32;
+
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let rr = rr_at(px as f32, py as f32, x, y, 1.0, 1.0, 0.0, inv_r2);
+            if rr > 1.0 {
+                continue;
+            }
+            let w = opa_at(rr, 0.5);
+            let p = sample(px, py);
+            sum_r += fix15::to_f32(p[0]) * w;
+            sum_g += fix15::to_f32(p[1]) * w;
+            sum_b += fix15::to_f32(p[2]) * w;
+            sum_a += fix15::to_f32(p[3]) * w;
+            sum_w += w;
+        }
+    }
+    if sum_w <= 0.0 {
+        return RgbaF32 {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+    }
+    RgbaF32 {
+        r: sum_r / sum_w,
+        g: sum_g / sum_w,
+        b: sum_b / sum_w,
+        a: sum_a / sum_w,
+    }
+}
+
 /// Average color in a circle of `radius` around `(x, y)`, mask-weighted
 /// with the same falloff a hardness=0.5 dab produces. Uses
 /// [`TiledSurface::tile_lookup`] for read-only sampling; backends that
@@ -436,6 +494,18 @@ mod tests {
         assert_eq!(opa_at(0.0, 1.0), 1.0);
         assert_eq!(opa_at(0.99, 1.0), 1.0);
         assert_eq!(opa_at(1.01, 1.0), 0.0);
+    }
+
+    #[test]
+    fn get_color_via_sample_averages_solid_fill() {
+        // Sample a 5×5 region painted pure red at full alpha. The
+        // mask-weighted average should be ≈ (1, 0, 0, 1).
+        let sample = |_px: i32, _py: i32| [crate::fix15::FIX15_ONE as u16, 0, 0, crate::fix15::FIX15_ONE as u16];
+        let c = get_color_via_sample(2.0, 2.0, 1.0, sample);
+        assert!((c.r - 1.0).abs() < 1e-3, "red: {}", c.r);
+        assert!(c.g.abs() < 1e-3);
+        assert!(c.b.abs() < 1e-3);
+        assert!((c.a - 1.0).abs() < 1e-3);
     }
 
     #[test]
