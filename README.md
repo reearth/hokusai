@@ -115,7 +115,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ### Pixel blending
 - [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
-- [ ] **Spectral `paint` mode** — modern MyPaint pigment mixing
+- [x] **Spectral `paint` mode** — 10-channel pigment WGM blending (libmypaint `BlendMode_Normal_and_Eraser_Paint`), with the `spectral_blend_factor` sigmoid fading to additive at low canvas alpha. Brush JSON's `paint_mode` now binds to the engine setting; the previous `paint` cname was stashing every pigment brush as an unknown setting.
 - [x] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
 - [ ] Direct `tile_lookup`-free `get_color` path for backends that can't expose tiles
 
