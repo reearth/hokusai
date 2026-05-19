@@ -381,9 +381,10 @@ impl Brush {
         // the value below zero on some dabs (Posterizer, several scatter
         // brushes) silently lost two `next_gauss` consumptions vs the
         // libmypaint reference and the RNG sequences then diverged.
-        let off_random_raw = sv.get(BrushSetting::OffsetByRandom);
-        let off_random = off_random_raw.max(0.0);
-        let off_speed = sv.get(BrushSetting::OffsetBySpeed);
+        // off_random / off_speed are now read per-dab from dab_sv (libmypaint
+        // reads SETTING(...) per-dab in prepare_and_draw_dab). The block below
+        // that gated RNG consumption on off_random_raw moves into the dab
+        // loop too.
 
         // Running state for the inner loop. `cur_*` advances toward the
         // event's smoothed target one step at a time; libmypaint commits
@@ -688,7 +689,9 @@ impl Brush {
             // Truthy check matches libmypaint — any non-zero curve value
             // burns 2 PRNG draws so the sequence stays in lock-step even
             // when the curve dips negative (where amplitude clamps to 0).
+            let off_random_raw = dab_sv.get(BrushSetting::OffsetByRandom);
             if off_random_raw != 0.0 {
+                let off_random = off_random_raw.max(0.0);
                 px += state.rng.next_gauss() * off_random * base_radius;
                 py += state.rng.next_gauss() * off_random * base_radius;
             }
@@ -718,11 +721,10 @@ impl Brush {
                 // size through to the renderer.
                 state.actual_radius = new_radius;
             }
+            let off_speed = dab_sv.get(BrushSetting::OffsetBySpeed);
             if off_speed != 0.0 {
                 // libmypaint: `x += NORM_DX_SLOW * offset_by_speed * 0.1 /
-                // viewzoom`. Viewzoom is 1.0 here. The previous hokusai
-                // formula scaled by `dab_radius * norm_speed1_slow * 0.04`
-                // — different vector source and different scale.
+                // viewzoom`. Viewzoom is 1.0 here.
                 px += state.norm_dx_slow * off_speed * 0.1;
                 py += state.norm_dy_slow * off_speed * 0.1;
             }
