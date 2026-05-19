@@ -1,0 +1,18 @@
+[package]
+name = "hokusai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust brush engine inspired by libmypaint (umbrella crate)"
+
+[features]
+default = ["myb-json", "tile-mem"]
+myb-json = ["dep:hokusai-brush"]
+tile-mem = ["dep:hokusai-tile-mem"]
+
+[dependencies]
+hokusai-core = { workspace = true }
+hokusai-brush = { workspace = true, optional = true }
+hokusai-tile-mem = { workspace = true, optional = true }

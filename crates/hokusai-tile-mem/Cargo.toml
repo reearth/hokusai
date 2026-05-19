@@ -1,0 +1,11 @@
+[package]
+name = "hokusai-tile-mem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory HashMap-backed TiledSurface for hokusai (reference impl)"
+
+[dependencies]
+hokusai-core = { workspace = true }

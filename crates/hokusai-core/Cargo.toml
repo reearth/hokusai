@@ -1,0 +1,16 @@
+[package]
+name = "hokusai-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust brush engine inspired by libmypaint — core types and stroke engine"
+
+[features]
+default = ["std"]
+std = []
+spectral = []
+
+[dependencies]
+thiserror = { workspace = true }
