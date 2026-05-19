@@ -168,6 +168,13 @@ impl Brush {
         inputs.set(BrushInput::TiltAscension, tilt_ascension);
         let sv = evaluate(self, &inputs);
 
+        // libmypaint's *base_radius* is `expf(BASEVAL(RADIUS_LOGARITHMIC))` —
+        // a brush-level constant unaffected by per-event input curves.
+        // Several downstream calculations (offset_by_random jitter, the
+        // dabs_per_basic_radius term, tracking_noise) scale by it rather
+        // than the current dab radius.
+        let base_radius = self.get(BrushSetting::Radius).base_value.exp().max(0.1);
+
         // --- Resolve actual radius ------------------------------------------
         // libmypaint's `radius_logarithmic` is stored as `ln(radius)`, so the
         // brush's effective radius in pixels is `exp(value)`. Using `exp2`
@@ -306,8 +313,15 @@ impl Brush {
                 state.actual_radius = dab_radius;
 
                 if off_random > 0.0 {
-                    px += state.rng.next_gauss() * off_random * dab_radius;
-                    py += state.rng.next_gauss() * off_random * dab_radius;
+                    // libmypaint scales the jitter by *base_radius* (the
+                    // brush's `exp(BASE radius_logarithmic)`) rather than the
+                    // current dab's radius, so the speckle pattern stays
+                    // wide even when pressure squashes the dab radius down.
+                    // Using `dab_radius` here previously made low-pressure
+                    // dabs cluster near the path instead of spreading like
+                    // libmypaint's charcoal does at the start of a stroke.
+                    px += state.rng.next_gauss() * off_random * base_radius;
+                    py += state.rng.next_gauss() * off_random * base_radius;
                 }
                 if off_speed > 0.0 {
                     // libmypaint pushes the dab along the motion direction
