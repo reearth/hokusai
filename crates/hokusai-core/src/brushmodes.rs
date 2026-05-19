@@ -65,9 +65,11 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let cs = angle.cos();
     let sn = angle.sin();
     let inv_r2 = 1.0 / (radius * radius);
-    // Anti-aliasing band in rr-space (rr is r² normalized). ~1 px feather
-    // at the dab edge when `anti_aliasing` is 1.0, scaled by radius.
-    let aa_band = (dab.anti_aliasing.clamp(0.0, 1.0) * 2.0) / radius;
+    // Anti-aliasing band in rr-space (rr is r² normalized). The setting
+    // is in *pixels of feather along the major axis*; libmypaint brushes
+    // commonly use 1–4 px here, so we don't clamp the input. With aa=1
+    // the feather is ~1 px wide at radius=1.
+    let aa_band = (dab.anti_aliasing.max(0.0) * 2.0) / radius;
 
     // Conservative AABB: enlarge by aspect_ratio so the rotated ellipse fits.
     let r_ext = radius * aspect + 1.0;
@@ -185,10 +187,13 @@ fn paint_into_tile(
             if rr >= aa_edge {
                 continue;
             }
-            // Smooth the outer aa_band-wide ring linearly from full opa→0.
-            let mut opa = if aa_band > 0.0 && rr > 1.0 - aa_band {
-                let inner = opa_at((1.0 - aa_band).max(0.0), hardness);
-                inner * ((aa_edge - rr) / (2.0 * aa_band)).clamp(0.0, 1.0)
+            // With anti_aliasing > 0, stretch the hardness falloff outward
+            // so the dab extends to rr = aa_edge with a smooth fade rather
+            // than a hard cut-off at rr = 1. This is what bridges thin
+            // elliptical brushes (calligraphy's 5:1 aspect with aa=3.53)
+            // into a connected stroke instead of separate slashes.
+            let mut opa = if aa_band > 0.0 {
+                opa_at(rr / aa_edge, hardness)
             } else if rr <= 1.0 {
                 opa_at(rr, hardness)
             } else {

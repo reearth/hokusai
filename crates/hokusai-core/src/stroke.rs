@@ -397,7 +397,11 @@ fn build_dab(
         posterize: sv.get(BrushSetting::Posterize).clamp(0.0, 1.0),
         posterize_num: sv.get(BrushSetting::PosterizeNum).max(1.0),
         paint: sv.get(BrushSetting::Paint).clamp(0.0, 1.0),
-        anti_aliasing: sv.get(BrushSetting::AntiAliasing).clamp(0.0, 1.0),
+        // anti_aliasing isn't a [0, 1] mask amount in libmypaint — real
+        // brushes like calligraphy.myb set it to 3.53 and rely on the
+        // wider feather to bridge thin elliptical dabs into a connected
+        // stroke. Don't clamp here; brushmodes scales it against radius.
+        anti_aliasing: sv.get(BrushSetting::AntiAliasing).max(0.0),
     }
 }
 
