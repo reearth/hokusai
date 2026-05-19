@@ -136,11 +136,22 @@ impl Brush {
         let approach = (1.0 - slow).powf((dt * 60.0).max(1e-3));
         let prev_actual_x = state.actual_x;
         let prev_actual_y = state.actual_y;
-        let new_actual_x = prev_actual_x + (x - prev_actual_x) * approach;
-        let new_actual_y = prev_actual_y + (y - prev_actual_y) * approach;
+        let mut new_actual_x = prev_actual_x + (x - prev_actual_x) * approach;
+        let mut new_actual_y = prev_actual_y + (y - prev_actual_y) * approach;
+
+        // --- Tracking noise: gaussian jitter on the smoothed position -------
+        let noise = sv.get(BrushSetting::TrackingNoise).max(0.0);
+        if noise > 0.0 {
+            new_actual_x += state.rng.next_gauss() * noise * radius;
+            new_actual_y += state.rng.next_gauss() * noise * radius;
+        }
         let dx = new_actual_x - prev_actual_x;
         let dy = new_actual_y - prev_actual_y;
         let dist = (dx * dx + dy * dy).sqrt();
+
+        // --- Stroke threshold: suppress dabs below a pressure floor --------
+        let threshold = sv.get(BrushSetting::StrokeThreshold).max(0.0);
+        let below_threshold = pressure < threshold;
 
         // --- Dab count along the smoothed segment ---------------------------
         let dpar = sv.get(BrushSetting::DabsPerActualRadius).max(0.0);
@@ -155,17 +166,39 @@ impl Brush {
         let mut accumulated = state.dist_past_dab + total_dabs;
         let mut painted = false;
 
-        if accumulated >= 1.0 {
+        if accumulated >= 1.0 && !below_threshold {
             let n = accumulated.floor().min(10_000.0) as u32;
             let dt_per_dab = dt / n.max(1) as f32;
             let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
             let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
             let smudge_radius = sv.get(BrushSetting::SmudgeRadiusLog).exp2().max(1.0);
+            let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
+            let off_speed = sv.get(BrushSetting::OffsetBySpeed).max(0.0);
+            // Unit vector along motion, used by offset_by_speed.
+            let (ux, uy) = if dist > 1e-6 {
+                (dx / dist, dy / dist)
+            } else {
+                (0.0, 0.0)
+            };
 
             for i in 1..=n {
                 let frac = (i as f32 - (accumulated - n as f32)) / total_dabs.max(1e-6);
-                let px = prev_actual_x + dx * frac;
-                let py = prev_actual_y + dy * frac;
+                let mut px = prev_actual_x + dx * frac;
+                let mut py = prev_actual_y + dy * frac;
+
+                if off_random > 0.0 {
+                    px += state.rng.next_gauss() * off_random * radius;
+                    py += state.rng.next_gauss() * off_random * radius;
+                }
+                if off_speed > 0.0 {
+                    // libmypaint pushes the dab along the motion direction
+                    // proportional to the slowed speed, normalised so that
+                    // unit setting × unit-radius brush gives a one-radius
+                    // displacement at moderate speeds.
+                    let mag = (state.norm_speed1_slow * 0.04).clamp(-4.0, 4.0);
+                    px += ux * off_speed * radius * mag;
+                    py += uy * off_speed * radius * mag;
+                }
 
                 // Smudge: refresh bucket from canvas, weighted by smudge_length.
                 if smudge_amt > 0.0 {
@@ -357,6 +390,72 @@ mod tests {
             "slow_tracking should suppress dab count: {} >= {}",
             surf_b.count,
             surf_a.count
+        );
+    }
+
+    #[test]
+    fn stroke_threshold_suppresses_low_pressure_dabs() {
+        let mut brush = make_brush(1.0, 2.0);
+        brush.set(BrushSetting::StrokeThreshold, SettingValue::constant(0.5));
+        let mut state = BrushState::default();
+        let mut surf = CountingSurface { count: 0 };
+        brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 0.3, 0.0, 0.0, 0.01);
+        brush.stroke_to(&mut state, &mut surf, 20.0, 0.0, 0.3, 0.0, 0.0, 0.01);
+        assert_eq!(surf.count, 0, "pressure 0.3 should be below threshold 0.5");
+
+        // Same motion, pressure above threshold: dabs land.
+        let mut state2 = BrushState::default();
+        let mut surf2 = CountingSurface { count: 0 };
+        brush.stroke_to(&mut state2, &mut surf2, 0.0, 0.0, 0.8, 0.0, 0.0, 0.01);
+        brush.stroke_to(&mut state2, &mut surf2, 20.0, 0.0, 0.8, 0.0, 0.0, 0.01);
+        assert!(surf2.count > 0, "pressure 0.8 should produce dabs");
+    }
+
+    #[test]
+    fn tracking_noise_shifts_dab_positions() {
+        // Same input + seed should be deterministic. Two states with the same
+        // seed differ in the dab positions iff tracking_noise injects gauss.
+        let noise_brush = {
+            let mut b = make_brush(1.0, 2.0);
+            b.set(BrushSetting::TrackingNoise, SettingValue::constant(0.5));
+            b
+        };
+        let plain = make_brush(1.0, 2.0);
+
+        struct CaptureSurface {
+            xs: Vec<f32>,
+        }
+        impl TiledSurface for CaptureSurface {
+            fn tile_request_start(&mut self, _: i32, _: i32) -> &mut crate::tile::TilePixels {
+                unreachable!()
+            }
+            fn tile_request_end(&mut self, _: i32, _: i32) {}
+            fn draw_dab(&mut self, d: &Dab) -> bool {
+                self.xs.push(d.x);
+                true
+            }
+        }
+
+        let mut sa = BrushState::default();
+        let mut sb = BrushState::default();
+        let mut ca = CaptureSurface { xs: vec![] };
+        let mut cb = CaptureSurface { xs: vec![] };
+
+        plain.stroke_to(&mut sa, &mut ca, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        plain.stroke_to(&mut sa, &mut ca, 20.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        noise_brush.stroke_to(&mut sb, &mut cb, 0.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+        noise_brush.stroke_to(&mut sb, &mut cb, 20.0, 0.0, 1.0, 0.0, 0.0, 0.01);
+
+        // Noise perturbs the segment length so dab counts can differ by one.
+        // Compare overlapping prefixes — any difference proves noise applied.
+        let any_differ = ca
+            .xs
+            .iter()
+            .zip(cb.xs.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-3);
+        assert!(
+            any_differ || ca.xs.len() != cb.xs.len(),
+            "tracking_noise should perturb the dab stream"
         );
     }
 
