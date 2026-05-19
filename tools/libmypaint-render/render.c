@@ -5,6 +5,14 @@
 //   libmypaint-render <script.json> <brush.myb>
 // Stdout: width*height*4 bytes of RGBA8. Width/height come from the script.
 //
+// We drive libmypaint via `mypaint_brush_stroke_to_2`, the non-legacy API
+// that respects each brush's `paint_mode` setting (legacy `stroke_to`
+// silently forces paint_mode to 0, so blender / smudge / watercolour
+// brushes wouldn't compare against hokusai's spectral pigment blend).
+// Since the bundled `MyPaintFixedTiledSurface` only exposes a Surface 1
+// interface, we wire up our own minimal `MyPaintTiledSurface2` backed by
+// a flat tile grid for the canvas extent given by the script.
+//
 // The flatten path mirrors hokusai_compat::render so the C and Rust outputs
 // are directly byte-comparable.
 
@@ -16,28 +24,89 @@
 
 #include <json-c/json.h>
 #include "mypaint-brush.h"
-#include "mypaint-fixed-tiled-surface.h"
 #include "mypaint-surface.h"
 #include "mypaint-tiled-surface.h"
 
 #define FIX15_ONE 32768
 
-static MyPaintSurfaceDrawDabFunction orig_draw_dab;
+// ---------------------------------------------------------------------------
+// Minimal Surface2-backed tile grid.
+//
+// Tiles are 64×64 fix15 RGBA `uint16_t[4]`, indexed by `(tx, ty)`. We
+// allocate the full grid up front since the script gives us a fixed
+// canvas size — keeps lookup branch-free during the dab loop.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    MyPaintTiledSurface2 base;
+    int tiles_x;
+    int tiles_y;
+    uint16_t *grid; // tiles_x * tiles_y * (TILE_SIZE * TILE_SIZE * 4) u16
+    // Scratch tile handed out for out-of-canvas requests. libmypaint asks
+    // for tiles covering the dab's whole bounding box, including beyond
+    // the canvas border — returning NULL crashes its dab loop.
+    uint16_t *scratch;
+} GridSurface;
+
+static inline uint16_t *grid_tile(GridSurface *g, int tx, int ty) {
+    if (tx < 0 || ty < 0 || tx >= g->tiles_x || ty >= g->tiles_y) {
+        // Wipe the scratch before lending it out so writes from previous
+        // OOB requests don't bleed into this one.
+        memset(g->scratch, 0,
+               (size_t)MYPAINT_TILE_SIZE * MYPAINT_TILE_SIZE * 4 * sizeof(uint16_t));
+        return g->scratch;
+    }
+    const int tile_pixels = MYPAINT_TILE_SIZE * MYPAINT_TILE_SIZE * 4;
+    return g->grid + ((size_t)(ty * g->tiles_x + tx) * tile_pixels);
+}
+
+static void grid_tile_request_start(MyPaintTiledSurface2 *self_, MyPaintTileRequest *req) {
+    GridSurface *self = (GridSurface *)self_;
+    req->buffer = grid_tile(self, req->tx, req->ty);
+}
+
+static void grid_tile_request_end(MyPaintTiledSurface2 *self_, MyPaintTileRequest *req) {
+    (void)self_; (void)req;
+}
+
+static MyPaintSurfaceDrawDabFunction2 orig_draw_dab_2;
 static int trace_dab_count;
 
-static int trace_draw_dab(
-    MyPaintSurface *self, float x, float y, float radius,
+static int trace_draw_dab_2(
+    MyPaintSurface2 *self, float x, float y, float radius,
     float r, float g, float b, float opaque, float hardness,
     float alpha_eraser, float aspect_ratio, float angle,
-    float lock_alpha, float colorize)
+    float lock_alpha, float colorize,
+    float posterize, float posterize_num, float paint)
 {
     trace_dab_count++;
     fprintf(stderr,
-        "  lmp#%d: (%6.2f,%6.2f) r=%5.2f hard=%4.2f opaq=%4.2f aspect=%4.2f ang=%6.1f\n",
-        trace_dab_count, x, y, radius, hardness, opaque, aspect_ratio, angle);
-    return orig_draw_dab(self, x, y, radius, r, g, b, opaque, hardness,
-                          alpha_eraser, aspect_ratio, angle, lock_alpha, colorize);
+        "  lmp#%d: (%6.2f,%6.2f) r=%5.2f hard=%4.2f opaq=%4.2f aspect=%4.2f ang=%6.1f paint=%4.2f\n",
+        trace_dab_count, x, y, radius, hardness, opaque, aspect_ratio, angle, paint);
+    return orig_draw_dab_2(self, x, y, radius, r, g, b, opaque, hardness,
+                          alpha_eraser, aspect_ratio, angle, lock_alpha, colorize,
+                          posterize, posterize_num, paint);
 }
+
+static GridSurface *grid_surface_new(int width, int height) {
+    GridSurface *g = calloc(1, sizeof(GridSurface));
+    g->tiles_x = (width + MYPAINT_TILE_SIZE - 1) / MYPAINT_TILE_SIZE;
+    g->tiles_y = (height + MYPAINT_TILE_SIZE - 1) / MYPAINT_TILE_SIZE;
+    const size_t tile_pixels = MYPAINT_TILE_SIZE * MYPAINT_TILE_SIZE * 4;
+    g->grid = calloc((size_t)g->tiles_x * g->tiles_y * tile_pixels, sizeof(uint16_t));
+    g->scratch = calloc(tile_pixels, sizeof(uint16_t));
+    mypaint_tiled_surface2_init(&g->base, grid_tile_request_start, grid_tile_request_end);
+    return g;
+}
+
+static void grid_surface_free(GridSurface *g) {
+    mypaint_tiled_surface2_destroy(&g->base);
+    free(g->grid);
+    free(g->scratch);
+    free(g);
+}
+
+// ---------------------------------------------------------------------------
 
 static float linear_to_srgb(float v) {
     if (v <= 0.0f) return 0.0f;
@@ -96,15 +165,16 @@ int main(int argc, char **argv) {
     mypaint_brush_reset(brush);
     mypaint_brush_new_stroke(brush);
 
-    MyPaintFixedTiledSurface *fts = mypaint_fixed_tiled_surface_new(width, height);
-    MyPaintSurface *surface = mypaint_fixed_tiled_surface_interface(fts);
+    GridSurface *gs = grid_surface_new(width, height);
+    MyPaintSurface2 *surface2 = &gs->base.parent;
+    MyPaintSurface *surface = &surface2->parent;
 
     // Optionally trace every dab to stderr. Set HOKUSAI_TRACE_DABS=1 to
     // enable; the output mirrors hokusai-compat's `debug_dabs` example for
     // direct comparison while diagnosing parity gaps.
     if (getenv("HOKUSAI_TRACE_DABS")) {
-        orig_draw_dab = surface->draw_dab;
-        surface->draw_dab = trace_draw_dab;
+        orig_draw_dab_2 = surface2->draw_dab_pigment;
+        surface2->draw_dab_pigment = trace_draw_dab_2;
     }
 
     // Warm-up: libmypaint's first stroke_to applies slow_tracking smoothing
@@ -113,12 +183,12 @@ int main(int argc, char **argv) {
     // the next event renders dabs along a phantom path from (0,0) to the
     // real start. Trigger libmypaint's "dtime > max_dtime (5s)" branch with
     // a large dt to seed STATE.X cleanly to the first event's position.
-    // This mirrors what MyPaint apps do on pointer-down.
     if (n_events > 0) {
         struct json_object *first = json_object_array_get_idx(jevents, 0);
         float sx = (float)json_object_get_double(json_object_array_get_idx(first, 0));
         float sy = (float)json_object_get_double(json_object_array_get_idx(first, 1));
-        mypaint_brush_stroke_to(brush, surface, sx, sy, 0.0f, 0.0f, 0.0f, 10.0);
+        mypaint_brush_stroke_to_2(brush, surface2, sx, sy, 0.0f, 0.0f, 0.0f, 10.0,
+                                  /*viewzoom=*/1.0f, /*viewrotation=*/0.0f, /*barrel_rotation=*/0.0f);
     }
 
     mypaint_surface_begin_atomic(surface);
@@ -128,9 +198,14 @@ int main(int argc, char **argv) {
         float y  = (float)json_object_get_double(json_object_array_get_idx(ev, 1));
         float p  = (float)json_object_get_double(json_object_array_get_idx(ev, 2));
         double dt =       json_object_get_double(json_object_array_get_idx(ev, 3));
-        mypaint_brush_stroke_to(brush, surface, x, y, p, 0.0f, 0.0f, dt);
+        mypaint_brush_stroke_to_2(brush, surface2, x, y, p, 0.0f, 0.0f, dt,
+                                  1.0f, 0.0f, 0.0f);
     }
-    mypaint_surface_end_atomic(surface, NULL);
+    // Call the Surface2 end_atomic directly: the libmypaint
+    // `end_atomic_wrapper` shim wraps a NULL `MyPaintRectangle*` into a
+    // `MyPaintRectangles{ num_rectangles=1, rectangles=NULL }`, which
+    // crashes when end_atomic_2 dereferences `rectangles[0]`.
+    mypaint_surface2_end_atomic(surface2, NULL);
 
     // Flatten tiles to RGBA8 over white, sRGB-encoded.
     uint8_t *out = malloc((size_t)width * height * 4);
@@ -142,20 +217,10 @@ int main(int argc, char **argv) {
     }
 
     const int TS = MYPAINT_TILE_SIZE;
-    int tiles_x = (width + TS - 1) / TS;
-    int tiles_y = (height + TS - 1) / TS;
-
-    MyPaintTiledSurface *tsurf = (MyPaintTiledSurface *)fts;
-    for (int ty = 0; ty < tiles_y; ty++) {
-        for (int tx = 0; tx < tiles_x; tx++) {
-            MyPaintTileRequest req;
-            mypaint_tile_request_init(&req, 0, tx, ty, /*readonly=*/1);
-            tsurf->tile_request_start(tsurf, &req);
-            uint16_t *buf = req.buffer;
-            if (!buf) {
-                tsurf->tile_request_end(tsurf, &req);
-                continue;
-            }
+    for (int ty = 0; ty < gs->tiles_y; ty++) {
+        for (int tx = 0; tx < gs->tiles_x; tx++) {
+            uint16_t *buf = grid_tile(gs, tx, ty);
+            if (!buf) continue;
             for (int ly = 0; ly < TS; ly++) {
                 for (int lx = 0; lx < TS; lx++) {
                     int wx = tx * TS + lx;
@@ -177,7 +242,6 @@ int main(int argc, char **argv) {
                     out[idx+3] = 255;
                 }
             }
-            tsurf->tile_request_end(tsurf, &req);
         }
     }
 
@@ -188,7 +252,6 @@ int main(int argc, char **argv) {
     free(brush_text);
     json_object_put(script);
     mypaint_brush_unref(brush);
-    // MyPaintFixedTiledSurface is destroyed via its surface interface.
-    mypaint_surface_unref(surface);
+    grid_surface_free(gs);
     return 0;
 }

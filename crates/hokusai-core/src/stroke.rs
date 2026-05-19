@@ -12,11 +12,11 @@
 //! 5. A final no-draw step absorbs the remaining `dtime_left` into the
 //!    speed slowness state so the next event starts cleanly.
 //!
-//! Still deferred: `custom_input` recursive evaluation (`custom_input`
-//! and `custom_input_slowness` settings), `direction_filter` smoothing
-//! of `STATE.DIRECTION_*`, and the `offset_x` / `offset_y` /
-//! `offset_angle*` / `offset_multiplier` family that needs the smoothed
-//! direction state to compute `directional_offsets`.
+//! Still deferred: the spectral `paint` mode is ported but the
+//! libmypaint reference comparison uses the legacy stroke_to which
+//! hard-codes `paint = 0`, so pigment-mixing brushes (blenders,
+//! watercolours) won't show parity until the C wrapper switches to
+//! `mypaint_brush_stroke_to_2` with a Surface2 wrapper.
 
 use crate::brush::Brush;
 use crate::color::{hsv_to_rgb, Hsv};
