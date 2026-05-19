@@ -726,7 +726,23 @@ impl Brush {
                     let smudge_radius = (dab_radius
                         * smudge_radius_log.exp())
                         .clamp(0.2, 1000.0);
-                    let sample = surface.get_color(px, py, smudge_radius);
+                    // libmypaint's `update_smudge_color` passes
+                    // `legacy_smudge ? -1.0 : paint_factor` to
+                    // `surface2_get_color`. paint_mode > 0 triggers
+                    // the spectral averaging; otherwise legacy
+                    // sampling (mask-weighted linear, straight alpha).
+                    let paint_for_sample =
+                        dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                    let sample = if paint_for_sample > 0.0 {
+                        surface.get_color_pigment(
+                            px,
+                            py,
+                            smudge_radius,
+                            paint_for_sample,
+                        )
+                    } else {
+                        surface.get_color(px, py, smudge_radius)
+                    };
 
                     // `smudge_transparency` gates the dab on the
                     // sampled canvas alpha. Positive: skip when sample

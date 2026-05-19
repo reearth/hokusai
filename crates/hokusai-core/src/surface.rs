@@ -64,4 +64,18 @@ pub trait TiledSurface {
     fn get_color(&self, x: f32, y: f32, radius: f32) -> RgbaF32 {
         crate::brushmodes::get_color_default(self, x, y, radius)
     }
+
+    /// libmypaint's `get_color_pigment`: alpha-weighted running WGM
+    /// average in 10-channel spectral space, blended with the
+    /// alpha-weighted linear average by `paint`. `paint < 0` falls
+    /// back to plain [`Self::get_color`] (legacy sampling); `paint >=
+    /// 0` runs the spectral path so blender / watercolour brushes mix
+    /// the way libmypaint's `Surface2::get_color_pigment` does.
+    fn get_color_pigment(&self, x: f32, y: f32, radius: f32, paint: f32) -> RgbaF32 {
+        if paint < 0.0 {
+            self.get_color(x, y, radius)
+        } else {
+            crate::brushmodes::get_color_pigment_default(self, x, y, radius, paint)
+        }
+    }
 }

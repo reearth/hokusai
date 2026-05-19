@@ -709,6 +709,150 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     }
 }
 
+/// Port of libmypaint's `Surface2::get_color_pigment`: a mask-weighted
+/// running average that blends a 10-channel spectral WGM with the
+/// alpha-weighted linear average by `paint`. The spectral path is what
+/// gives pigment-style brushes (blender, watercolour, …) a colour mix
+/// closer to real paint — without it, sampling the canvas under a
+/// blue+yellow gradient comes back as muddy grey instead of green.
+///
+/// Returns straight-alpha. Like libmypaint, pixels with `rgba.a == 0`
+/// don't contribute (they still count toward `sum_weight` but the
+/// running average is unchanged).
+pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
+    surface: &S,
+    x: f32,
+    y: f32,
+    radius: f32,
+    paint: f32,
+) -> RgbaF32 {
+    use crate::spectral::{rgb_to_spectral, spectral_to_rgb};
+
+    let radius = radius.max(0.5);
+    let inv_r2 = 1.0 / (radius * radius);
+    let r_ext = radius + 1.0;
+    let x0 = (x - r_ext).floor() as i32;
+    let y0 = (y - r_ext).floor() as i32;
+    let x1 = (x + r_ext).ceil() as i32;
+    let y1 = (y + r_ext).ceil() as i32;
+    let tx0 = x0.div_euclid(TILE_SIZE as i32);
+    let ty0 = y0.div_euclid(TILE_SIZE as i32);
+    let tx1 = x1.div_euclid(TILE_SIZE as i32);
+    let ty1 = y1.div_euclid(TILE_SIZE as i32);
+
+    let paint = paint.clamp(0.0, 1.0);
+
+    let mut sum_weight = 0.0_f32;
+    let mut sum_a = 0.0_f32;
+    let mut avg_rgb = [0.0_f32; 3];
+    let mut avg_spectral = [0.0_f32; 10];
+    let mut spectral_seeded = false;
+
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            let Some(tile) = surface.tile_lookup(tx, ty) else {
+                continue;
+            };
+            let ox = tx * TILE_SIZE as i32;
+            let oy = ty * TILE_SIZE as i32;
+            let lx0 = (x0 - ox).max(0) as usize;
+            let ly0 = (y0 - oy).max(0) as usize;
+            let lx1 = (x1 - ox).min(TILE_SIZE as i32 - 1) as usize;
+            let ly1 = (y1 - oy).min(TILE_SIZE as i32 - 1) as usize;
+            if lx0 > lx1 || ly0 > ly1 {
+                continue;
+            }
+            for ly in ly0..=ly1 {
+                let py = (oy + ly as i32) as f32;
+                for lx in lx0..=lx1 {
+                    let px = (ox + lx as i32) as f32;
+                    let rr = rr_at(px, py, x, y, 1.0, 1.0, 0.0, inv_r2);
+                    if rr > 1.0 {
+                        continue;
+                    }
+                    let mask = opa_at(rr, 0.5);
+                    let p = tile[ly][lx];
+                    let pa = fix15::to_f32(p[3]);
+                    sum_weight += mask;
+                    // `a` is the pixel's alpha contribution weighted by
+                    // the mask, matching libmypaint's
+                    // `a = mask[0] * rgba[3] / (1 << 30)`.
+                    let a = mask * pa;
+                    if pa <= 0.0 {
+                        continue;
+                    }
+                    // Running alpha-weighted average:
+                    //   fac_a = a / (a + sum_a)
+                    let alpha_sums = a + sum_a;
+                    let (fac_a, fac_b) = if alpha_sums > 0.0 {
+                        let fa = a / alpha_sums;
+                        (fa, 1.0 - fa)
+                    } else {
+                        (1.0, 1.0)
+                    };
+                    // Un-premultiply the canvas pixel for the
+                    // running-average inputs.
+                    let inv_pa = 1.0 / pa;
+                    let sr = fix15::to_f32(p[0]) * inv_pa;
+                    let sg = fix15::to_f32(p[1]) * inv_pa;
+                    let sb = fix15::to_f32(p[2]) * inv_pa;
+
+                    if paint > 0.0 {
+                        let spectral = rgb_to_spectral(sr, sg, sb);
+                        if !spectral_seeded {
+                            // First contributing pixel seeds the
+                            // spectral accumulator outright (no WGM
+                            // with the zeroed bucket).
+                            avg_spectral = spectral;
+                            spectral_seeded = true;
+                        } else {
+                            for i in 0..10 {
+                                avg_spectral[i] = spectral[i].max(1e-6).powf(fac_a)
+                                    * avg_spectral[i].max(1e-6).powf(fac_b);
+                            }
+                        }
+                    }
+                    if paint < 1.0 {
+                        avg_rgb[0] = sr * fac_a + avg_rgb[0] * fac_b;
+                        avg_rgb[1] = sg * fac_a + avg_rgb[1] * fac_b;
+                        avg_rgb[2] = sb * fac_a + avg_rgb[2] * fac_b;
+                    }
+                    sum_a += a;
+                }
+            }
+        }
+    }
+    if sum_weight <= 0.0 {
+        return RgbaF32::TRANSPARENT;
+    }
+    let a = (sum_a / sum_weight).clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return RgbaF32::TRANSPARENT;
+    }
+
+    let (r, g, b) = if paint > 0.0 {
+        let (sr, sg, sb) = spectral_to_rgb(&avg_spectral);
+        if paint >= 1.0 {
+            (sr, sg, sb)
+        } else {
+            (
+                paint * sr + (1.0 - paint) * avg_rgb[0],
+                paint * sg + (1.0 - paint) * avg_rgb[1],
+                paint * sb + (1.0 - paint) * avg_rgb[2],
+            )
+        }
+    } else {
+        (avg_rgb[0], avg_rgb[1], avg_rgb[2])
+    };
+
+    RgbaF32 {
+        r: r.clamp(0.0, 1.0),
+        g: g.clamp(0.0, 1.0),
+        b: b.clamp(0.0, 1.0),
+        a,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
