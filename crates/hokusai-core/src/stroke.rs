@@ -249,13 +249,13 @@ impl Brush {
         // Several downstream calculations (offset_by_random jitter, the
         // dabs_per_basic_radius term, tracking_noise) scale by it rather
         // than the current dab radius.
-        let base_radius = self.get(BrushSetting::Radius).base_value.exp().max(0.1);
+        let base_radius = self.get(BrushSetting::Radius).base_value.exp().clamp(0.2, 1000.0);
 
         // --- Resolve actual radius ------------------------------------------
         // libmypaint's `radius_logarithmic` is stored as `ln(radius)`, so the
         // brush's effective radius in pixels is `exp(value)`. Using `exp2`
         // here previously made every dab ~2.6× smaller than libmypaint's.
-        let radius = sv.get(BrushSetting::Radius).exp().max(0.1);
+        let radius = sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
 
         // For the dab-count step we need the radius at the *start* of this
         // segment. libmypaint uses `STATE.ACTUAL_RADIUS` here — for a fresh
@@ -636,7 +636,7 @@ impl Brush {
             dab_inputs.set(BrushInput::GridmapY, gy.clamp(0.0, GRID_SIZE));
 
             let dab_sv = evaluate(self, &dab_inputs);
-            let dab_radius = dab_sv.get(BrushSetting::Radius).exp().max(0.1);
+            let dab_radius = dab_sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
             state.actual_radius = dab_radius;
 
             // Refresh STATE.CUSTOM_INPUT toward the freshly evaluated
