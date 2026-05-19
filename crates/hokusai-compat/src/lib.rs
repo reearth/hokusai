@@ -76,7 +76,31 @@ pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
     // No finish_stroke here: libmypaint's reference path does not flush
     // slow_tracking on its own, and the parity goldens are produced without
     // such a flush. Applications that want a trailing-pixel drain should
-    // call `Brush::finish_stroke` themselves.
+    // call `Brush::finish_stroke` themselves — see [`render_with_finish`].
+    flatten(&surface, script.width, script.height)
+}
+
+/// Same as [`render`] but drains `slow_tracking` lag at the end with
+/// [`Brush::finish_stroke`]. This is what an interactive app does on
+/// pointer-up, so continuity property tests use this variant — otherwise
+/// every stroke ends with a `slow_tracking * speed`-sized unpainted tail
+/// (which is shared with libmypaint, just normally hidden by app code).
+pub fn render_with_finish(brush: &Brush, script: &Script) -> Vec<u8> {
+    let mut state = BrushState::default();
+    let mut surface = MemSurface::new();
+    for ev in &script.events {
+        brush.stroke_to(
+            &mut state,
+            &mut surface,
+            ev[0],
+            ev[1],
+            ev[2],
+            0.0,
+            0.0,
+            ev[3] as f64,
+        );
+    }
+    brush.finish_stroke(&mut state, &mut surface);
     flatten(&surface, script.width, script.height)
 }
 

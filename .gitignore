@@ -8,3 +8,4 @@ Cargo.lock
 /crates/hokusai-wasm/demo/brushes/
 /crates/hokusai-compat/fixtures/*.actual.png
 /tools/libmypaint-render/libmypaint-render
+/tmp/

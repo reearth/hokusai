@@ -94,21 +94,27 @@ impl Brush {
         state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * (1.0 - alpha2);
 
         // --- Stroke progress: 0..1 across `stroke_duration_logarithmic` ----
-        // dur_log is log2(seconds), so `2^dur_log` is the configured length.
+        // libmypaint stores duration as `ln(seconds)`, so `exp(dur_log)` is
+        // the configured length in seconds.
         let dur_log = self.get(BrushSetting::StrokeDurationLogarithmic).base_value;
-        let dur = dur_log.exp2().max(0.01);
+        let dur = dur_log.exp().max(0.01);
         let stroke_progress = (state.stroke_total_painting_time as f32 / dur).clamp(0.0, 1.0);
 
         // --- Tilt-derived inputs --------------------------------------------
-        // xtilt, ytilt come in normalized to [-1, 1] from Wacom-style devices.
-        // declination = asin(|tilt|) → 0° straight up, 90° lying flat.
-        // ascension   = atan2(ytilt, xtilt) → rotation around the up axis.
-        let tilt_mag = (xtilt * xtilt + ytilt * ytilt).sqrt().min(1.0);
-        let tilt_declination = tilt_mag.asin().to_degrees();
-        let tilt_ascension = if xtilt == 0.0 && ytilt == 0.0 {
-            0.0
+        // libmypaint convention (mypaint-brush.c):
+        //   declination = 90° when the pen is straight up, decreasing as the
+        //     pen tilts toward the tablet. Formula: `90 - hypot(xtilt,ytilt) * 60`.
+        //   ascension   = `atan2(-xtilt, ytilt)` in degrees.
+        // When no tilt is reported, libmypaint leaves declination at 90 and
+        // ascension at 0 — anything else makes pressure-only strokes evaluate
+        // brushes (e.g. marker_fat) as if the pen were lying flat against the
+        // tablet, which feeds wildly wrong radius/aspect values into the
+        // curves.
+        let (tilt_mag, tilt_declination, tilt_ascension) = if xtilt == 0.0 && ytilt == 0.0 {
+            (0.0, 90.0, 0.0)
         } else {
-            ytilt.atan2(xtilt).to_degrees()
+            let m = (xtilt * xtilt + ytilt * ytilt).sqrt().min(1.0);
+            (m, 90.0 - m * 60.0, (-xtilt).atan2(ytilt).to_degrees())
         };
 
         // --- Build input vector ---------------------------------------------
@@ -127,7 +133,10 @@ impl Brush {
         let sv = evaluate(self, &inputs);
 
         // --- Resolve actual radius ------------------------------------------
-        let radius = sv.get(BrushSetting::Radius).exp2().max(0.1);
+        // libmypaint's `radius_logarithmic` is stored as `ln(radius)`, so the
+        // brush's effective radius in pixels is `exp(value)`. Using `exp2`
+        // here previously made every dab ~2.6× smaller than libmypaint's.
+        let radius = sv.get(BrushSetting::Radius).exp().max(0.1);
         state.actual_radius = radius;
 
         // --- Slow tracking: advance smoothed position toward the event ------
@@ -182,8 +191,14 @@ impl Brush {
         } else {
             1.0
         };
+        // libmypaint's `count_dabs_to` is `dist_ellipse / radius * DPAR` plus
+        // the basic-radius and per-second terms — i.e. `dabs_per_actual_radius`
+        // means dabs per *radius* of travel, not per diameter. Dividing by
+        // `radius * 2.0` here (as a previous revision did) halved the dab
+        // count, producing visible gaps in libmypaint-thin brushes once the
+        // tilt_declination fix made radii small enough to expose them.
         let dist_dabs = if radius > 0.0 {
-            dist * (dpar + dpbr) * elongation / (radius * 2.0)
+            dist * (dpar + dpbr) * elongation / radius
         } else {
             0.0
         };
@@ -196,7 +211,9 @@ impl Brush {
             let dt_per_dab = dt / n.max(1) as f32;
             let smudge_amt = sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
             let smudge_length = sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
-            let smudge_radius = sv.get(BrushSetting::SmudgeRadiusLog).exp2().max(1.0);
+            // libmypaint: `smudge_radius = radius * expf(SMUDGE_RADIUS_LOG)`.
+            // The setting is a multiplier in `ln` space, not an absolute size.
+            let smudge_radius = (radius * sv.get(BrushSetting::SmudgeRadiusLog).exp()).max(1.0);
             let off_random = sv.get(BrushSetting::OffsetByRandom).max(0.0);
             let off_speed = sv.get(BrushSetting::OffsetBySpeed).max(0.0);
             // Unit vector along motion, used by offset_by_speed.
@@ -396,14 +413,34 @@ fn build_dab(
     let opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
     // TODO: opaque_linearize as a gamma-style adjustment on the result.
 
-    let hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
+    let mut hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
+    let mut radius = state.actual_radius;
+
+    // libmypaint's anti_aliasing: if the current edge fadeout (in pixels)
+    // is narrower than the requested minimum, soften the brush by lowering
+    // hardness and growing the geometric radius so the *optical* radius —
+    // the perceptual center of the falloff — stays the same. Encoding AA
+    // this way (rather than as a separate dab field) means the renderer
+    // sees a regular hard/soft dab with no special path. See
+    // libmypaint/mypaint-brush.c `prepare_and_draw_dab`.
+    let aa_min = sv.get(BrushSetting::AntiAliasing).max(0.0);
+    let current_fadeout = radius * (1.0 - hardness);
+    if aa_min > current_fadeout && hardness < 1.0 || (aa_min > 0.0 && hardness >= 1.0) {
+        let optical = radius - (1.0 - hardness) * radius * 0.5;
+        let hardness_new = (optical - aa_min * 0.5) / (optical + aa_min * 0.5);
+        if hardness_new > 0.0 && hardness_new < 1.0 {
+            radius = aa_min / (1.0 - hardness_new);
+            hardness = hardness_new;
+        }
+    }
+
     let eraser = sv.get(BrushSetting::Eraser).clamp(0.0, 1.0);
     let alpha_eraser = 1.0 - eraser;
 
     Dab {
         x: px,
         y: py,
-        radius: state.actual_radius,
+        radius,
         color,
         opaque,
         hardness,
@@ -415,11 +452,8 @@ fn build_dab(
         posterize: sv.get(BrushSetting::Posterize).clamp(0.0, 1.0),
         posterize_num: sv.get(BrushSetting::PosterizeNum).max(1.0),
         paint: sv.get(BrushSetting::Paint).clamp(0.0, 1.0),
-        // anti_aliasing isn't a [0, 1] mask amount in libmypaint — real
-        // brushes like calligraphy.myb set it to 3.53 and rely on the
-        // wider feather to bridge thin elliptical dabs into a connected
-        // stroke. Don't clamp here; brushmodes scales it against radius.
-        anti_aliasing: sv.get(BrushSetting::AntiAliasing).max(0.0),
+        // AA has been baked into `radius` and `hardness` above.
+        anti_aliasing: 0.0,
     }
 }
 

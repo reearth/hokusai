@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use hokusai_compat::{load_brush, render, Script};
+use hokusai_compat::{load_brush, render_with_finish as render, Script};
 
 fn brush_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

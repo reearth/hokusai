@@ -82,6 +82,20 @@ int main(int argc, char **argv) {
     MyPaintFixedTiledSurface *fts = mypaint_fixed_tiled_surface_new(width, height);
     MyPaintSurface *surface = mypaint_fixed_tiled_surface_interface(fts);
 
+    // Warm-up: libmypaint's first stroke_to applies slow_tracking smoothing
+    // BEFORE detecting the reset_requested flag, so for brushes with heavy
+    // `slow_tracking` the seeded STATE.X bleeds toward the default 0, and
+    // the next event renders dabs along a phantom path from (0,0) to the
+    // real start. Trigger libmypaint's "dtime > max_dtime (5s)" branch with
+    // a large dt to seed STATE.X cleanly to the first event's position.
+    // This mirrors what MyPaint apps do on pointer-down.
+    if (n_events > 0) {
+        struct json_object *first = json_object_array_get_idx(jevents, 0);
+        float sx = (float)json_object_get_double(json_object_array_get_idx(first, 0));
+        float sy = (float)json_object_get_double(json_object_array_get_idx(first, 1));
+        mypaint_brush_stroke_to(brush, surface, sx, sy, 0.0f, 0.0f, 0.0f, 10.0);
+    }
+
     mypaint_surface_begin_atomic(surface);
     for (int i = 0; i < n_events; i++) {
         struct json_object *ev = json_object_array_get_idx(jevents, i);
