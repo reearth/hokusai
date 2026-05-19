@@ -119,7 +119,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ### Compatibility
 - [x] **libmypaint-sourced golden snapshots** — `tools/libmypaint-render/` is a small C wrapper around `mypaint_brush_stroke_to`, and `cargo xtask regenerate-goldens` drives it across the fixture set so `crates/hokusai-compat/fixtures/*.png` is upstream output. `cargo xtask parity-report` renders a side-by-side HTML diff for eyeballing the parity surface
-- [x] **GRand-compatible** PRNG output mapping — `g_rand_double` and `rand_gauss` distributions match libmypaint; `g_rand_int_range` not yet exposed
+- [ ] **Knuth lagged Fibonacci PRNG** — libmypaint uses `rng-double.c` (TAOCP 3.6-15), not MT19937. Hokusai currently ships MT19937 with a matching `rand_gauss` distribution shape (mean / stddev within tolerance), which is *statistically* close but not byte-identical, so brushes that use `offset_by_random` / `tracking_noise` (charcoal, …) sit at MAD ≈ 0.8–1.0 against libmypaint goldens
 - [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
 - [ ] Close residual MAD on `brush_pressure_ramp`, `calligraphy_*`, `charcoal_*` (≈ 1–4 vs. tolerance 0.5)
 - [ ] Compatibility tests against the full libmypaint brush pack
