@@ -123,10 +123,15 @@
       const x = (e.clientX - rect.left) * (canvasEl.width  / rect.width);
       const y = (e.clientY - rect.top)  * (canvasEl.height / rect.height);
       const p = e.pressure > 0 ? e.pressure : 0.5; // mouse → fixed 0.5
+      // PointerEvent.tiltX/Y are in degrees [-90, 90]; libmypaint expects
+      // a unit-vector-style [-1, 1]. Use sin(tilt°) so a horizontal pen
+      // (90°) maps to magnitude 1.
+      const xtilt = Math.sin((e.tiltX || 0) * Math.PI / 180);
+      const ytilt = Math.sin((e.tiltY || 0) * Math.PI / 180);
       const now = performance.now();
       const dt = Math.max(0.001, (now - lastT) / 1000);
       lastT = now;
-      canvas.strokeTo(brush, x, y, p, dt);
+      canvas.strokeTo(brush, x, y, p, xtilt, ytilt, dt);
       flush();
     }
 

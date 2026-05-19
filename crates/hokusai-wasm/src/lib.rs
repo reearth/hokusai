@@ -99,16 +99,29 @@ impl HokusaiCanvas {
     }
 
     /// Feed one pointer event. `dtime` is seconds since the previous call.
+    ///
+    /// `xtilt` / `ytilt` are pen tilt in [-1, 1], matching libmypaint's
+    /// convention. Pass 0 for devices that don't report tilt.
     #[wasm_bindgen(js_name = strokeTo)]
-    pub fn stroke_to(&mut self, brush: &HokusaiBrush, x: f32, y: f32, pressure: f32, dtime: f64) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_to(
+        &mut self,
+        brush: &HokusaiBrush,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        xtilt: f32,
+        ytilt: f32,
+        dtime: f64,
+    ) {
         brush.inner.stroke_to(
             &mut self.state,
             &mut self.surface,
             x,
             y,
             pressure,
-            0.0,
-            0.0,
+            xtilt,
+            ytilt,
             dtime,
         );
     }
