@@ -1403,19 +1403,27 @@ fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
     (gamma + speed_norm.max(0.0)).ln() * m + q
 }
 
+/// libmypaint's `INPUT(DIRECTION)` — 180°-folded direction in *degrees*.
+/// `mod_arith(degrees(atan2(dy, dx)) + viewrotation + 180, 180)` with
+/// `viewrotation = 0`. The output range is `[0, 180)`; declared as
+/// `hard_minimum=0, hard_maximum=180` in libmypaint's
+/// `brushsettings.json`.
 fn direction_input(dx: f32, dy: f32) -> f32 {
     if dx == 0.0 && dy == 0.0 {
         0.0
     } else {
-        (dy.atan2(dx) / (2.0 * std::f32::consts::PI)).rem_euclid(1.0)
+        (dy.atan2(dx).to_degrees() + 180.0).rem_euclid(180.0)
     }
 }
 
+/// libmypaint's `INPUT(DIRECTION_ANGLE)` — full 360° direction in *degrees*.
+/// `fmodf(degrees(atan2(dy, dx)) + viewrotation + 360, 360)` with
+/// `viewrotation = 0`. Output range `[0, 360)`.
 fn direction_angle(dx: f32, dy: f32) -> f32 {
     if dx == 0.0 && dy == 0.0 {
         0.0
     } else {
-        dy.atan2(dx).to_degrees()
+        (dy.atan2(dx).to_degrees() + 360.0).rem_euclid(360.0)
     }
 }
 
