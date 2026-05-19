@@ -23,3 +23,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [[example]]
 name = "stroke_to_png"
 required-features = ["tile-mem"]
+
+[[example]]
+name = "myb_to_png"
+required-features = ["tile-mem", "myb-json"]

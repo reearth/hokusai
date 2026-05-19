@@ -3,3 +3,4 @@ Cargo.lock
 **/*.rs.bk
 .DS_Store
 /out.png
+/out-*.png

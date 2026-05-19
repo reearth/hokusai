@@ -45,6 +45,23 @@ impl Brush {
     ) -> bool {
         let pressure = pressure.clamp(0.0, 1.0);
 
+        // --- Fresh stroke: seed position, no dabs ---------------------------
+        // Matches libmypaint's behaviour after `mypaint_brush_reset` — the
+        // first event of a new stroke only sets state. Also kick in when the
+        // caller signals "long pause" via dtime ≥ 5 s.
+        if !state.started || dtime >= 5.0 {
+            state.last_event_x = x;
+            state.last_event_y = y;
+            state.last_event_time += dtime;
+            state.actual_x = x;
+            state.actual_y = y;
+            state.last_dab_x = x;
+            state.last_dab_y = y;
+            state.dist_past_dab = 0.0;
+            state.started = true;
+            return false;
+        }
+
         // --- Event delta -----------------------------------------------------
         let dx = x - state.last_event_x;
         let dy = y - state.last_event_y;
