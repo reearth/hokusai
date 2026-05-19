@@ -4,6 +4,7 @@ members = [
     "crates/hokusai-core",
     "crates/hokusai-brush",
     "crates/hokusai-tile-mem",
+    "crates/hokusai-compat",
     "hokusai",
 ]
 

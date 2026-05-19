@@ -1,0 +1,19 @@
+[package]
+name = "hokusai-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Snapshot regression harness for hokusai (libmypaint parity track)"
+publish = false
+
+[dependencies]
+hokusai-core = { workspace = true }
+hokusai-brush = { workspace = true }
+hokusai-tile-mem = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
