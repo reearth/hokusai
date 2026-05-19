@@ -1,0 +1,10 @@
+{
+  "brush": "../../../hokusai/examples/fixtures/brush.myb",
+  "width": 120,
+  "height": 80,
+  "events": [
+    [60, 40, 0.0, 0.0],
+    [60, 40, 1.0, 0.01],
+    [60, 40, 1.0, 0.05]
+  ]
+}
