@@ -783,7 +783,13 @@ impl Brush {
 
                     let smudge_radius_log =
                         dab_sv.get(BrushSetting::SmudgeRadiusLog);
-                    let smudge_radius = (dab_radius
+                    // libmypaint feeds the post-radius_by_random radius
+                    // into update_smudge_color (`radius` at
+                    // mypaint-brush.c:1044, reassigned in the
+                    // radius_by_random branch a few lines earlier). For
+                    // brushes whose noise meaningfully shifts the radius
+                    // the smudge sample needs to scale with it.
+                    let smudge_radius = (state.actual_radius
                         * smudge_radius_log.exp())
                         .clamp(0.2, 1000.0);
                     // libmypaint's `update_smudge_color` passes
