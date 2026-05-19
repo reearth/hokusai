@@ -3,6 +3,11 @@
 A small browser canvas that uses `hokusai-wasm` to draw with real
 libmypaint brushes.
 
+Hosted version: <https://reearth.github.io/hokusai/> (deployed by
+`.github/workflows/pages.yml` on every push to `main`).
+
+The rest of this file is the recipe for running it locally.
+
 ## Build
 
 ```sh

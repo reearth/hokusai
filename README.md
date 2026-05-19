@@ -7,6 +7,8 @@
 
 A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/libmypaint), designed for WebAssembly and native targets.
 
+🎨 **[Try the live demo](https://reearth.github.io/hokusai/)** — draws in your browser using the real libmypaint brushes, with stylus pressure and tilt where the device supports it.
+
 The full pipeline — `.myb` brush load → stroke engine → dab blend on tiles — is implemented and can render real libmypaint brushes (`charcoal`, `calligraphy`, `marker_fat`, …). Pixel-level parity with libmypaint is the goal; the gap is tracked in [TODO](#todo).
 
 ## Goals

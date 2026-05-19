@@ -1,0 +1,66 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-flight runs on the same branch.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pages
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: Build wasm bundle
+        run: |
+          wasm-pack build crates/hokusai-wasm \
+            --target web \
+            --release \
+            --out-dir demo/pkg
+
+      - name: Stage brush fixtures
+        run: |
+          mkdir -p crates/hokusai-wasm/demo/brushes
+          cp hokusai/examples/fixtures/*.myb crates/hokusai-wasm/demo/brushes/
+
+      - name: Disable Jekyll
+        run: touch crates/hokusai-wasm/demo/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/hokusai-wasm/demo
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
