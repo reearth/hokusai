@@ -112,18 +112,24 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - [x] **Custom input** — `custom_input_slowness` smooths `SETTING(custom_input)` into `INPUT(CUSTOM)` so curves can chain lagged outputs back in
 - [x] **Direction smoothing** — `direction_filter` low-pass on `STATE.DIRECTION_*` and `DIRECTION_ANGLE_*`, with the 180°-folded variant for 1D direction curves
 - [x] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`) — full `directional_offsets` port with `STATE.FLIP` mirroring
+- [x] **`tracking_noise` skip coalescing** — events drop into a `skip_distance` window so jitter samples track cursor distance, not input frequency
+- [x] **`radius_by_random`** — per-dab radius gaussian jitter with libmypaint's `(orig / new)² opacity correction
+- [x] **`apply_smudge` / `eraser_target_alpha`** — smudge bucket's alpha drives the dab's source alpha so blender/smear/watercolor brushes thin out instead of bulldozing
+- [x] **Spectral `mix_colors`** — smudge bucket update + apply both run through the libmypaint WGM mix when `paint_mode > 0`
 
 ### Pixel blending
 - [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
 - [x] **Spectral `paint` mode** — 10-channel pigment WGM blending (libmypaint `BlendMode_Normal_and_Eraser_Paint`), with the `spectral_blend_factor` sigmoid fading to additive at low canvas alpha. Brush JSON's `paint_mode` now binds to the engine setting; the previous `paint` cname was stashing every pigment brush as an unknown setting.
 - [x] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
-- [ ] Direct `tile_lookup`-free `get_color` path for backends that can't expose tiles
+- [x] Direct `tile_lookup`-free `get_color` path — backends override `TiledSurface::get_color` and forward to `brushmodes::get_color_via_sample` with a per-pixel reader closure
+- [x] **Posterize as its own pass** — runs after Normal + Paint so `paint_mode = 1` brushes still posterize; `posterize_num` JSON value multiplied by 100 and clamped to [1, 128] per libmypaint
+- [ ] Spectral `get_color` averaging when `paint_mode > 0` — libmypaint's `Surface2::get_color_pigment` averages in spectral space, hokusai still uses the linear-light mask weight
 
 ### Compatibility
 - [x] **libmypaint-sourced golden snapshots** — `tools/libmypaint-render/` is a small C wrapper around `mypaint_brush_stroke_to`, and `cargo xtask regenerate-goldens` drives it across the fixture set so `crates/hokusai-compat/fixtures/*.png` is upstream output. `cargo xtask parity-report` renders a side-by-side HTML diff for eyeballing the parity surface
 - [x] **Knuth lagged Fibonacci PRNG** — port of libmypaint's `rng-double.c` (TAOCP 3.6-15) with the same `rand_gauss` scaling (`sum*√3 − 2√3`) and per-dab `random_input` refresh order. Seeding mirrors `rng_double_new(1000)`.
 - [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
-- [x] **Brush-pack parity tool** — `cargo xtask brush-pack-report` walks `tmp/mypaint-brushes/` (override via `HOKUSAI_BRUSH_PACK`), drives every `.myb` through a fixed pressure-ramp curve in both libmypaint and hokusai, and writes a sortable Markdown table of per-brush MAD to `tmp/brush-pack-report.md`. Current state: ~80 of 196 stock brushes already pass the MAD ≤ 0.50 tolerance.
+- [x] **Brush-pack parity tool** — `cargo xtask brush-pack-report` walks `tmp/mypaint-brushes/` (override via `HOKUSAI_BRUSH_PACK`), drives every `.myb` through a fixed pressure-ramp curve in both libmypaint and hokusai (via the Surface2 path so `paint_mode` brushes get real spectral blending on both sides), and writes a sortable Markdown table of per-brush MAD to `tmp/brush-pack-report.md`. Current state: **117 of 196** stock brushes pass MAD ≤ 0.50; another 57 sit in the amber band (≤ 5.0). Remaining red brushes are mostly RNG-heavy scatter / particle brushes whose dab placements diverge from libmypaint's sequence even when each formula matches.
 
 ### Backends
 - [x] **`hokusai-tiny-skia`** — flatten any `TiledSurface` into a `tiny_skia::Pixmap` (over-white or transparent variants), with a `hokusai_compat::render` parity test
