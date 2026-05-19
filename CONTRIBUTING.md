@@ -5,7 +5,7 @@ and propose changes to hokusai.
 
 ## Prerequisites
 
-- Rust **1.75** or newer (the project's MSRV). `rustup` is the easiest path.
+- Rust **1.77** or newer (the project's MSRV). `rustup` is the easiest path.
 - For the `wasm32-unknown-unknown` build check:
   `rustup target add wasm32-unknown-unknown`.
 

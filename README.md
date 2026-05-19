@@ -89,7 +89,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - Tile-aware traversal across arbitrary canvas extents
 - Deterministic MT19937 PRNG
 - Snapshot regression harness (`hokusai-compat`) with `HOKUSAI_UPDATE_GOLDENS=1`
-- CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.75
+- CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.77
 
 ## TODO
 
