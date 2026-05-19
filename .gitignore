@@ -10,3 +10,4 @@ Cargo.lock
 /tools/libmypaint-render/libmypaint-render
 /tmp/
 tmp/
+.claude/
