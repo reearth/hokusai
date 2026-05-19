@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Pure Rust brush engine inspired by libmypaint — core types and stroke engine"
+readme = "../../README.md"
 
 [features]
 default = ["std"]

@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "In-memory HashMap-backed TiledSurface for hokusai (reference impl)"
+readme = "../../README.md"
 
 [dependencies]
 hokusai-core = { workspace = true }

@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "libmypaint `.myb` JSON read/write for hokusai"
+readme = "../../README.md"
 
 [dependencies]
 hokusai-core = { workspace = true }

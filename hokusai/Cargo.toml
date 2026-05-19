@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Pure Rust brush engine inspired by libmypaint (umbrella crate)"
+readme = "../README.md"
 
 [features]
 default = ["myb-json", "tile-mem"]
