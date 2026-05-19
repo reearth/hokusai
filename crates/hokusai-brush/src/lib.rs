@@ -26,6 +26,7 @@
 
 use std::collections::BTreeMap;
 
+use hokusai_core::brush::UnknownSetting;
 use hokusai_core::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 use serde::{Deserialize, Serialize};
 
@@ -79,8 +80,16 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
 
     for (name, rs) in raw.settings {
         let Some(setting) = BrushSetting::from_cname(&name) else {
-            // Unknown setting — silently skip for now.
-            // TODO: capture into Brush::unknown_settings for lossless round-trip.
+            // Unknown setting — preserve for lossless round-trip.
+            let mut u = UnknownSetting {
+                base_value: rs.base_value,
+                inputs: BTreeMap::new(),
+            };
+            for (iname, points) in rs.inputs {
+                u.inputs
+                    .insert(iname, points.into_iter().map(|p| (p[0], p[1])).collect());
+            }
+            brush.unknown_settings.insert(name, u);
             continue;
         };
 
@@ -90,6 +99,8 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
         };
         for (iname, points) in rs.inputs {
             let Some(input) = BrushInput::from_cname(&iname) else {
+                // TODO: preserve unknown inputs inside a known setting.
+                // Rare in practice — punted for now.
                 continue;
             };
             sv.inputs.push(InputMapping {
@@ -131,6 +142,22 @@ pub fn to_string_pretty(brush: &Brush) -> Result<String, Error> {
             },
         );
     }
+    // Emit unknown settings back out so a parse+serialize cycle preserves
+    // every key the brush was originally authored with.
+    for (name, u) in &brush.unknown_settings {
+        let inputs = u
+            .inputs
+            .iter()
+            .map(|(iname, pts)| (iname.clone(), pts.iter().map(|(x, y)| [*x, *y]).collect()))
+            .collect();
+        settings.insert(
+            name.clone(),
+            RawSetting {
+                base_value: u.base_value,
+                inputs,
+            },
+        );
+    }
     let raw = Raw {
         version: brush.version,
         group: brush.group.clone(),
@@ -166,6 +193,30 @@ mod tests {
             b.get(BrushSetting::Opaque).inputs[0].input,
             BrushInput::Pressure
         );
+    }
+
+    #[test]
+    fn unknown_settings_roundtrip_losslessly() {
+        let json = r#"{
+            "version": 3,
+            "settings": {
+                "opaque": { "base_value": 1.0 },
+                "future_blink_blink": {
+                    "base_value": 0.42,
+                    "inputs": { "future_zoom": [[0.0, 0.0], [1.0, 1.0]] }
+                }
+            }
+        }"#;
+        let b = from_str(json).unwrap();
+        assert_eq!(b.unknown_settings.len(), 1);
+        let u = b.unknown_settings.get("future_blink_blink").unwrap();
+        assert_eq!(u.base_value, 0.42);
+        assert_eq!(u.inputs.get("future_zoom").unwrap().len(), 2);
+
+        // Roundtrip retains the unknown setting.
+        let out = to_string_pretty(&b).unwrap();
+        let b2 = from_str(&out).unwrap();
+        assert_eq!(b.unknown_settings, b2.unknown_settings);
     }
 
     #[test]

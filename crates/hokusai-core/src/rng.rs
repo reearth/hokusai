@@ -69,14 +69,16 @@ impl BrushRng {
         (a as f64 * 67108864.0 + b as f64) / 9007199254740992.0
     }
 
-    /// Box-Muller approximation of standard normal, matching libmypaint's
-    /// `rand_gauss` (which sums 12 uniforms and subtracts 6).
+    /// libmypaint's `rand_gauss`: sum of four `g_rand_double` samples,
+    /// then `* 0.5 - 1.0`. This is intentionally **not** a true N(0,1) —
+    /// it has stddev ~0.289 — but matches the upstream distribution
+    /// brushes were authored against.
     pub fn next_gauss(&mut self) -> f32 {
-        let mut sum = 0.0f32;
-        for _ in 0..12 {
-            sum += self.next_unit();
-        }
-        sum - 6.0
+        let s = self.next_unit_f64()
+            + self.next_unit_f64()
+            + self.next_unit_f64()
+            + self.next_unit_f64();
+        (s * 0.5 - 1.0) as f32
     }
 }
 
@@ -110,13 +112,24 @@ mod tests {
     }
 
     #[test]
-    fn gauss_roughly_centered() {
+    fn gauss_distribution_matches_libmypaint() {
         let mut r = BrushRng::new(123);
-        let mut sum = 0.0;
-        for _ in 0..10_000 {
-            sum += r.next_gauss();
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        let n = 20_000;
+        for _ in 0..n {
+            let v = r.next_gauss() as f64;
+            sum += v;
+            sum_sq += v * v;
         }
-        let mean = sum / 10_000.0;
-        assert!(mean.abs() < 0.1, "mean = {mean}");
+        let mean = sum / n as f64;
+        let var = sum_sq / n as f64 - mean * mean;
+        let std = var.sqrt();
+        // Mean ≈ 0, stddev ≈ 1/sqrt(12) ≈ 0.289 (libmypaint's choice).
+        assert!(mean.abs() < 0.02, "mean = {mean}");
+        assert!(
+            (std - 0.289).abs() < 0.02,
+            "stddev = {std}, expected ~0.289"
+        );
     }
 }

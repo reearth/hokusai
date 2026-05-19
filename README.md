@@ -112,8 +112,8 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ### Compatibility
 - [ ] **libmypaint-sourced golden snapshots** — replace the self-generated PNGs under `crates/hokusai-compat/fixtures/` with output from upstream libmypaint to make the harness actually verify parity (see `crates/hokusai-compat/src/lib.rs` docs)
-- [ ] **GRand-compatible** PRNG output mapping — current PRNG is MT19937 but the `g_rand_double` / `g_rand_int_range` wrappers haven't been bit-matched yet
-- [ ] **Lossless round-trip** for unknown `.myb` settings (preserve, don't drop)
+- [x] **GRand-compatible** PRNG output mapping — `g_rand_double` and `rand_gauss` distributions match libmypaint; `g_rand_int_range` not yet exposed
+- [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
 - [ ] Compatibility tests against the full libmypaint brush pack
 
 ### Backends
