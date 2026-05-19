@@ -126,6 +126,49 @@ pub fn spectral_to_rgb(spec: &[f32; 10]) -> (f32, f32, f32) {
     (out(tmp[0]), out(tmp[1]), out(tmp[2]))
 }
 
+/// Port of libmypaint's `mix_colors` (helpers.c) — blends two RGBA
+/// straight-alpha colours `a` and `b` (the "current smudge state" and
+/// the "sampled / brush" colour) with weight `fac` for `a`. When
+/// `paint_mode > 0` the colour channels mix in spectral space via WGM;
+/// when `paint_mode < 1` a linear mix is layered in proportionally so a
+/// fractional setting fades smoothly between the two.
+///
+/// Returns `[r, g, b, a]` straight-alpha.
+pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 4] {
+    let opa_a = fac;
+    let opa_b = 1.0 - opa_a;
+    let out_a = (opa_a * a[3] + opa_b * b[3]).clamp(0.0, 1.0);
+
+    let sfac_a = if a[3] == 0.0 {
+        0.0
+    } else {
+        opa_a * a[3] / (a[3] + b[3] * opa_b)
+    };
+    let sfac_b = 1.0 - sfac_a;
+
+    let mut result = [0.0_f32; 4];
+    if paint_mode > 0.0 {
+        let spec_a = rgb_to_spectral(a[0], a[1], a[2]);
+        let spec_b = rgb_to_spectral(b[0], b[1], b[2]);
+        let mut mix = [0.0_f32; 10];
+        for i in 0..10 {
+            mix[i] = spec_a[i].max(1e-6).powf(sfac_a) * spec_b[i].max(1e-6).powf(sfac_b);
+        }
+        let (r, g, b_) = spectral_to_rgb(&mix);
+        result[0] = r;
+        result[1] = g;
+        result[2] = b_;
+    }
+    if paint_mode < 1.0 {
+        for i in 0..3 {
+            let lin = a[i] * opa_a + b[i] * opa_b;
+            result[i] = result[i] * paint_mode + (1.0 - paint_mode) * lin;
+        }
+    }
+    result[3] = out_a;
+    result
+}
+
 /// Sigmoid-ish factor libmypaint uses to fade between additive and
 /// spectral blending at low canvas alpha. `x` is the destination
 /// alpha in `[0, 1]`; returns a value in roughly the same range with

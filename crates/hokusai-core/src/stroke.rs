@@ -633,10 +633,42 @@ impl Brush {
                     (dab_radius * smudge_radius_log.exp()).max(1.0);
                 let sample = surface.get_color(px, py, smudge_radius);
                 let fac = smudge_length;
-                state.smudge_ra = state.smudge_ra * fac + sample.r * sample.a * (1.0 - fac);
-                state.smudge_ga = state.smudge_ga * fac + sample.g * sample.a * (1.0 - fac);
-                state.smudge_ba = state.smudge_ba * fac + sample.b * sample.a * (1.0 - fac);
-                state.smudge_a = state.smudge_a * fac + sample.a * (1.0 - fac);
+                let paint_mode = dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                if paint_mode > 0.0 {
+                    // libmypaint's non-legacy smudge bucket stores
+                    // straight-alpha values updated via `mix_colors`
+                    // (spectral WGM weighted by `paint_factor`). When
+                    // paint_mode > 0 we repurpose the existing
+                    // `smudge_ra/ga/ba` fields as straight-alpha
+                    // channels — the build_dab apply path below
+                    // branches on the same paint_mode flag, so the
+                    // interpretation is consistent. Near-empty
+                    // samples just decay the bucket alpha (libmypaint
+                    // does `smudge_a = (smudge_a + a) / 2`).
+                    if sample.a > 0.01 {
+                        let prev = [state.smudge_ra, state.smudge_ga, state.smudge_ba, state.smudge_a];
+                        let cur = [sample.r, sample.g, sample.b, sample.a];
+                        let mixed = crate::spectral::mix_colors(prev, cur, fac, paint_mode);
+                        state.smudge_ra = mixed[0];
+                        state.smudge_ga = mixed[1];
+                        state.smudge_ba = mixed[2];
+                        state.smudge_a = mixed[3];
+                    } else {
+                        state.smudge_a = (state.smudge_a + sample.a) * 0.5;
+                    }
+                } else {
+                    // Legacy smudge — what hokusai had before. Stores
+                    // SMUDGE_R as `fac_old * SMUDGE_R + (1 - fac) * a * r`,
+                    // SMUDGE_A as `fac_old * SMUDGE_A + (1 - fac) * a`.
+                    state.smudge_ra =
+                        state.smudge_ra * fac + sample.r * sample.a * (1.0 - fac);
+                    state.smudge_ga =
+                        state.smudge_ga * fac + sample.g * sample.a * (1.0 - fac);
+                    state.smudge_ba =
+                        state.smudge_ba * fac + sample.b * sample.a * (1.0 - fac);
+                    state.smudge_a =
+                        state.smudge_a * fac + sample.a * (1.0 - fac);
+                }
             }
 
             drift_color(state, &dab_sv, step_dtime);
@@ -820,6 +852,7 @@ fn build_dab(
     // transparent. That's the bulk of the divergence on the blender /
     // smear / watercolour brushes in the upstream pack.
     let smudge_amt = smudge_amt.clamp(0.0, 1.0);
+    let paint_mode = sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
     let eraser_target_alpha =
         ((1.0 - smudge_amt) + smudge_amt * state.smudge_a).clamp(0.0, 1.0);
     let color = if smudge_amt <= 0.0 || eraser_target_alpha <= 0.0 {
@@ -829,7 +862,23 @@ fn build_dab(
             b: base.b,
             a: 1.0,
         }
+    } else if paint_mode > 0.0 {
+        // Non-legacy apply: spectral / WGM mix of the (straight-alpha)
+        // smudge bucket with the brush colour. `mix_colors` returns
+        // straight alpha; the dab field consumes that directly.
+        let smudge_color = [state.smudge_ra, state.smudge_ga, state.smudge_ba, state.smudge_a];
+        let brush_color = [base.r, base.g, base.b, 1.0];
+        let mixed = crate::spectral::mix_colors(smudge_color, brush_color, smudge_amt, paint_mode);
+        crate::color::RgbaF32 {
+            r: mixed[0].clamp(0.0, 1.0),
+            g: mixed[1].clamp(0.0, 1.0),
+            b: mixed[2].clamp(0.0, 1.0),
+            a: 1.0,
+        }
     } else {
+        // Legacy apply (libmypaint `apply_smudge` with `legacy_smudge =
+        // true`): the smudge bucket is stored as `(1-fac)*a*r` so the
+        // division by `eraser_target_alpha` recovers the straight value.
         let col_factor = 1.0 - smudge_amt;
         crate::color::RgbaF32 {
             r: ((smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha)
