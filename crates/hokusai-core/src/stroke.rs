@@ -164,8 +164,26 @@ impl Brush {
         let dpar = sv.get(BrushSetting::DabsPerActualRadius).max(0.0);
         let dpbr = sv.get(BrushSetting::DabsPerBasicRadius).max(0.0);
         let dps = sv.get(BrushSetting::DabsPerSecond).max(0.0);
+
+        // Elliptical brushes whose major axis is perpendicular to motion
+        // expose only their thin minor-axis cross-section along the stroke,
+        // so the dab-per-radius rate has to scale up to keep coverage
+        // continuous. Compute the dab's projection factor in motion-space:
+        //   sqrt(cos²θ_rel + aspect² · sin²θ_rel)
+        // (1.0 when aligned with motion, → aspect when perpendicular).
+        // Without this, calligraphy at "size +N" leaves the visible
+        // slash gaps the user reported.
+        let aspect = sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
+        let elongation = if aspect > 1.0 && dist > 1e-6 {
+            let motion_angle = dy.atan2(dx);
+            let dab_angle = sv.get(BrushSetting::EllipticalDabAngle).to_radians();
+            let rel = dab_angle - motion_angle;
+            (rel.cos().powi(2) + aspect.powi(2) * rel.sin().powi(2)).sqrt()
+        } else {
+            1.0
+        };
         let dist_dabs = if radius > 0.0 {
-            dist * (dpar + dpbr) / (radius * 2.0)
+            dist * (dpar + dpbr) * elongation / (radius * 2.0)
         } else {
             0.0
         };

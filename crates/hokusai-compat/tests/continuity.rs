@@ -266,3 +266,46 @@ fn brush_coalesced_short_dt() {
         coalesced_script("brush.myb", 40.0, 0.004, 2.0, 320),
     );
 }
+
+/// Render at a forced larger-than-designed radius, mimicking a user who
+/// dragged the demo's size slider up. Elliptical brushes have to stay
+/// continuous at any size — the brush's anti_aliasing won't be enough on
+/// its own at large radius, so the dab-density elongation correction must
+/// kick in.
+fn check_oversized(name: &str, brush: &str, radius_log: f32) {
+    use hokusai_core::BrushSetting;
+    let dx = 12.0_f32;
+    let dt: f32 = 0.016;
+    let start_x = 30.0_f32;
+    let mut events = Vec::with_capacity(81);
+    for i in 0..=80 {
+        events.push([start_x + dx * i as f32, 60.0, 1.0, dt]);
+    }
+    let script = Script {
+        brush: brush_path(brush),
+        width: (start_x as u32) + (dx as u32) * 80 + 40,
+        height: 120,
+        events,
+    };
+    let mut brush_obj = load_brush(&script.brush).unwrap();
+    brush_obj.get_mut(BrushSetting::Radius).base_value = radius_log;
+    let pixels = render(&brush_obj, &script);
+    let gap = longest_white_run(&pixels, script.width, 50, 20, 50..(script.width - 50));
+    assert!(
+        gap.longest <= MAX_GAP_PX,
+        "{name}: longest white run = {} px at x={} (allowed ≤ {MAX_GAP_PX})",
+        gap.longest,
+        gap.longest_start,
+    );
+}
+
+#[test]
+fn calligraphy_large_radius_no_big_gaps() {
+    // 2^4 = 16 px radius — well above the brush's designed 4 px.
+    check_oversized("calligraphy (large)", "calligraphy.myb", 4.0);
+}
+
+#[test]
+fn marker_fat_large_radius_no_big_gaps() {
+    check_oversized("marker_fat (large)", "marker_fat.myb", 4.5);
+}
