@@ -83,6 +83,11 @@ impl Brush {
             state.smudge_ga = 0.0;
             state.smudge_ba = 0.0;
             state.smudge_a = 0.0;
+            state.prev_col_r = 0.0;
+            state.prev_col_g = 0.0;
+            state.prev_col_b = 0.0;
+            state.prev_col_a = 0.0;
+            state.prev_col_recentness = 0.0;
             state.norm_speed1_slow = 0.0;
             state.norm_speed2_slow = 0.0;
             state.norm_dx_slow = 0.0;
@@ -690,53 +695,110 @@ impl Brush {
                 py += state.norm_dy_slow * off_speed * 0.1;
             }
 
+            // libmypaint's `update_smudge_color`: lazy canvas resample
+            // (controlled by `smudge_length_log` / recentness counter),
+            // then the legacy/spectral mix into the smudge bucket. The
+            // sampled colour can also gate-out the whole dab via
+            // `smudge_transparency`.
+            let mut skip_dab = false;
             if smudge_amt > 0.0 {
-                let smudge_radius =
-                    (dab_radius * smudge_radius_log.exp()).max(1.0);
-                let sample = surface.get_color(px, py, smudge_radius);
-                let fac = smudge_length;
-                let paint_mode = dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
-                if paint_mode > 0.0 {
-                    // libmypaint's non-legacy smudge bucket stores
-                    // straight-alpha values updated via `mix_colors`
-                    // (spectral WGM weighted by `paint_factor`). When
-                    // paint_mode > 0 we repurpose the existing
-                    // `smudge_ra/ga/ba` fields as straight-alpha
-                    // channels — the build_dab apply path below
-                    // branches on the same paint_mode flag, so the
-                    // interpretation is consistent. Near-empty
-                    // samples just decay the bucket alpha (libmypaint
-                    // does `smudge_a = (smudge_a + a) / 2`).
-                    if sample.a > 0.01 {
-                        let prev = [state.smudge_ra, state.smudge_ga, state.smudge_ba, state.smudge_a];
-                        let cur = [sample.r, sample.g, sample.b, sample.a];
-                        let mixed = crate::spectral::mix_colors(prev, cur, fac, paint_mode);
-                        state.smudge_ra = mixed[0];
-                        state.smudge_ga = mixed[1];
-                        state.smudge_ba = mixed[2];
-                        state.smudge_a = mixed[3];
-                    } else {
-                        state.smudge_a = (state.smudge_a + sample.a) * 0.5;
+                let smudge_length_log =
+                    dab_sv.get(BrushSetting::SmudgeLengthLog);
+                let mut update_factor = smudge_length.max(0.01);
+
+                // Decay the existing recentness; if it falls below the
+                // libmypaint threshold we resample the canvas.
+                let recentness = state.prev_col_recentness * update_factor;
+                state.prev_col_recentness = recentness;
+                let threshold = (0.5 * update_factor)
+                    .powf(smudge_length_log)
+                    .min(1.0)
+                    + 1e-16;
+
+                let (sr, sg, sb, sa) = if recentness < threshold {
+                    // First call after a long pause initialises the
+                    // bucket directly with the sample.
+                    if recentness == 0.0 {
+                        update_factor = 0.0;
                     }
+                    state.prev_col_recentness = 1.0;
+
+                    let smudge_radius = (dab_radius
+                        * smudge_radius_log.exp())
+                        .clamp(0.2, 1000.0);
+                    let sample = surface.get_color(px, py, smudge_radius);
+
+                    // `smudge_transparency` gates the dab on the
+                    // sampled canvas alpha. Positive: skip when sample
+                    // is *more* transparent than the threshold;
+                    // negative: skip when *more* opaque than the
+                    // mirror threshold.
+                    let smudge_op_lim =
+                        dab_sv.get(BrushSetting::SmudgeTransparency);
+                    if (smudge_op_lim > 0.0 && sample.a < smudge_op_lim)
+                        || (smudge_op_lim < 0.0
+                            && sample.a > -smudge_op_lim)
+                    {
+                        skip_dab = true;
+                    }
+                    state.prev_col_r = sample.r;
+                    state.prev_col_g = sample.g;
+                    state.prev_col_b = sample.b;
+                    state.prev_col_a = sample.a;
+                    (sample.r, sample.g, sample.b, sample.a)
                 } else {
-                    // Legacy smudge — what hokusai had before. Stores
-                    // SMUDGE_R as `fac_old * SMUDGE_R + (1 - fac) * a * r`,
-                    // SMUDGE_A as `fac_old * SMUDGE_A + (1 - fac) * a`.
-                    state.smudge_ra =
-                        state.smudge_ra * fac + sample.r * sample.a * (1.0 - fac);
-                    state.smudge_ga =
-                        state.smudge_ga * fac + sample.g * sample.a * (1.0 - fac);
-                    state.smudge_ba =
-                        state.smudge_ba * fac + sample.b * sample.a * (1.0 - fac);
-                    state.smudge_a =
-                        state.smudge_a * fac + sample.a * (1.0 - fac);
+                    (
+                        state.prev_col_r,
+                        state.prev_col_g,
+                        state.prev_col_b,
+                        state.prev_col_a,
+                    )
+                };
+
+                if !skip_dab {
+                    let fac = update_factor;
+                    let paint_mode =
+                        dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                    if paint_mode > 0.0 {
+                        if sa > 0.01 {
+                            let prev = [
+                                state.smudge_ra,
+                                state.smudge_ga,
+                                state.smudge_ba,
+                                state.smudge_a,
+                            ];
+                            let cur = [sr, sg, sb, sa];
+                            let mixed = crate::spectral::mix_colors(
+                                prev, cur, fac, paint_mode,
+                            );
+                            state.smudge_ra = mixed[0];
+                            state.smudge_ga = mixed[1];
+                            state.smudge_ba = mixed[2];
+                            state.smudge_a = mixed[3];
+                        } else {
+                            state.smudge_a =
+                                (state.smudge_a + sa) * 0.5;
+                        }
+                    } else {
+                        // Legacy smudge: SMUDGE_R += (1-fac)*a*r.
+                        let fac_new = (1.0 - fac) * sa;
+                        state.smudge_ra =
+                            state.smudge_ra * fac + sr * fac_new;
+                        state.smudge_ga =
+                            state.smudge_ga * fac + sg * fac_new;
+                        state.smudge_ba =
+                            state.smudge_ba * fac + sb * fac_new;
+                        state.smudge_a = (state.smudge_a * fac
+                            + (1.0 - fac) * sa)
+                            .clamp(0.0, 1.0);
+                    }
                 }
             }
 
             drift_color(state, &dab_sv, step_dtime);
 
             let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt, dab_opaque_scale);
-            if surface.draw_dab(&dab) {
+            if !skip_dab && surface.draw_dab(&dab) {
                 painted = true;
             }
             state.last_dab_x = dab.x;

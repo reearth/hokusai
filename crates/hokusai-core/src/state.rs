@@ -106,6 +106,18 @@ pub struct BrushState {
     pub smudge_ga: f32,
     pub smudge_ba: f32,
     pub smudge_a: f32,
+    /// libmypaint's `PREV_COL_R/G/B/A/RECENTNESS` smudge-bucket slots —
+    /// the most recent canvas sample plus a counter that decays each dab
+    /// and is reset to 1.0 each time the canvas is actually re-sampled.
+    /// `smudge_length_log` sets how long the cached value stays in use:
+    /// for the default 0 it expires immediately (re-sample every dab),
+    /// for larger values libmypaint can go many dabs between
+    /// `get_color` calls.
+    pub prev_col_r: f32,
+    pub prev_col_g: f32,
+    pub prev_col_b: f32,
+    pub prev_col_a: f32,
+    pub prev_col_recentness: f32,
 
     pub rng: BrushRng,
 
@@ -172,6 +184,11 @@ impl BrushState {
             smudge_ga: 0.0,
             smudge_ba: 0.0,
             smudge_a: 0.0,
+            prev_col_r: 0.0,
+            prev_col_g: 0.0,
+            prev_col_b: 0.0,
+            prev_col_a: 0.0,
+            prev_col_recentness: 0.0,
             rng: BrushRng::new(seed),
             last_pressure: 0.0,
             random_input: 0.0,

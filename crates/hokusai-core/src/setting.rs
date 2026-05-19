@@ -75,6 +75,7 @@ define_settings! {
     ChangeColorHsvS              => "change_color_hsv_s",
     Smudge                       => "smudge",
     SmudgeLength                 => "smudge_length",
+    SmudgeLengthLog              => "smudge_length_log",
     SmudgeRadiusLog              => "smudge_radius_log",
     Eraser                       => "eraser",
     StrokeThreshold              => "stroke_threshold",
