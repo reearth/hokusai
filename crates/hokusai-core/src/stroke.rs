@@ -366,7 +366,9 @@ impl Brush {
         // libmypaint reads SMUDGE / SMUDGE_LENGTH per-dab; only SMUDGE_RADIUS_LOG
         // is treated as constant by `update_smudge_color`. Match that — the
         // per-dab versions are pulled from `dab_sv` inside the loop.
-        let smudge_radius_log = sv.get(BrushSetting::SmudgeRadiusLog);
+        // smudge_radius_log is now read per-dab from dab_sv inside the loop
+        // — libmypaint reads SETTING(SMUDGE_RADIUS_LOG) inside
+        // update_smudge_color (mypaint-brush.c line 854).
         // libmypaint's gate for entering `update_smudge_color` is
         // `SMUDGE != 0 || mapping not constant`. We need to know if the
         // mapping has any inputs so a curve-driven smudge that momentarily
@@ -766,6 +768,8 @@ impl Brush {
                     }
                     state.prev_col_recentness = 1.0;
 
+                    let smudge_radius_log =
+                        dab_sv.get(BrushSetting::SmudgeRadiusLog);
                     let smudge_radius = (dab_radius
                         * smudge_radius_log.exp())
                         .clamp(0.2, 1000.0);
