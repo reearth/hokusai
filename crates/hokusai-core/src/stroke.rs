@@ -1144,8 +1144,16 @@ fn build_dab(
         .base_value
         .max(0.0);
     if opaque_linearize > 0.0 && opaque > 0.0 {
-        let dpar = brush.get(BrushSetting::DabsPerActualRadius).base_value;
-        let dpbr = brush.get(BrushSetting::DabsPerBasicRadius).base_value;
+        // libmypaint's non-legacy path reads DABS_PER_* from STATE
+        // (mypaint-brush.c:970), which is the per-dab SETTING value
+        // (assigned from SETTING(...) at line 628-630). The legacy
+        // path uses BASEVAL. We always sample SETTING via dab_sv
+        // here so brushes whose dabs_per_* are curve-driven (Round#1
+        // uses brush_radius on DABS_PER_ACTUAL_RADIUS) compute the
+        // opacity correction the same way the non-legacy reference
+        // does.
+        let dpar = sv.get(BrushSetting::DabsPerActualRadius);
+        let dpbr = sv.get(BrushSetting::DabsPerBasicRadius);
         let mut dabs_per_pixel = (dpar + dpbr) * 2.0;
         if dabs_per_pixel < 1.0 {
             dabs_per_pixel = 1.0;
