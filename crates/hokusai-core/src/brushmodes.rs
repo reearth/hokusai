@@ -155,7 +155,10 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     if dab.radius < 0.1 || dab.hardness <= 0.0 || dab.opaque <= 0.0 {
         return false;
     }
-    let radius = dab.radius.max(0.5);
+    // libmypaint rejects radius < 0.1 above and otherwise renders with
+    // the actual radius (mypaint-tiled-surface.c:575). hokusai used to
+    // floor at 0.5 here, which made very thin pencils render thicker.
+    let radius = dab.radius;
     let aspect = dab.aspect_ratio.max(1.0);
     let angle = dab.angle.to_radians();
     let cs = angle.cos();
@@ -692,7 +695,7 @@ pub fn get_color_via_sample<F>(x: f32, y: f32, radius: f32, sample: F) -> RgbaF3
 where
     F: Fn(i32, i32) -> [u16; 4],
 {
-    let radius = radius.max(0.5);
+    let radius = radius.max(1.0); // libmypaint floors get_color radius at 1.0 (mypaint-tiled-surface.c:659)
     let inv_r2 = 1.0 / (radius * radius);
     let r_ext = radius + 1.0;
     let x0 = (x - r_ext).floor() as i32;
@@ -758,7 +761,7 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     y: f32,
     radius: f32,
 ) -> RgbaF32 {
-    let radius = radius.max(0.5);
+    let radius = radius.max(1.0); // libmypaint floors get_color radius at 1.0 (mypaint-tiled-surface.c:659)
     let inv_r2 = 1.0 / (radius * radius);
     let r_ext = radius + 1.0;
     let x0 = (x - r_ext).floor() as i32;
@@ -851,7 +854,7 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
 ) -> RgbaF32 {
     use crate::spectral::{rgb_to_spectral, spectral_to_rgb};
 
-    let radius = radius.max(0.5);
+    let radius = radius.max(1.0); // libmypaint floors get_color radius at 1.0 (mypaint-tiled-surface.c:659)
     let inv_r2 = 1.0 / (radius * radius);
     let r_ext = radius + 1.0;
     let x0 = (x - r_ext).floor() as i32;
