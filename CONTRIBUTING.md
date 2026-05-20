@@ -82,10 +82,18 @@ HOKUSAI_UPDATE_GOLDENS=1 cargo test -p hokusai-compat
 When a test fails normally, the actual output is written next to the script
 as `<name>.actual.png` for inspection.
 
-> The committed goldens are currently produced by hokusai itself, so the
-> harness only catches **regressions**, not true libmypaint parity. See
-> `crates/hokusai-compat/src/lib.rs` for the path to upgrading the goldens
-> to upstream libmypaint output.
+> The default `HOKUSAI_UPDATE_GOLDENS=1` path produces goldens from hokusai
+> itself, so the harness only catches **regressions**. To regenerate the
+> goldens from real libmypaint instead — the libmypaint-parity track — run:
+>
+> ```sh
+> ./scripts/regenerate-goldens.sh           # all fixtures
+> ./scripts/regenerate-goldens.sh smudge    # filter by name substring
+> ```
+>
+> That script chains `setup-parity.sh` → `cargo xtask regenerate-goldens`
+> → `cargo test -p hokusai-compat` so a fresh checkout reproduces the
+> committed PNGs end-to-end.
 
 ## libmypaint parity testing
 

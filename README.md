@@ -64,78 +64,73 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 ## Features
 
 **Brush data**
-- All ~50 libmypaint settings as a strongly-typed enum with libmypaint-canonical string keys
-- All inputs (`pressure`, `speed1/2`, `random`, `stroke`, `direction`, `tilt`, …)
-- `.myb` v3 JSON parse / serialize, round-trip safe for known keys
+- All ~50 libmypaint settings as a strongly-typed enum with canonical string keys
+- All inputs (`pressure`, `speed1/2`, `random`, `stroke`, `direction`, `tilt`, `custom`, `gridmap_*`, `attack_angle`, `viewzoom`, `barrel_rotation`, `brush_radius`, `tilt_declinationx/y`, …)
+- `.myb` v3 JSON parse / serialize, round-trip safe (unknown top-level settings preserved verbatim)
 
-**Stroke engine**
-- Per-event setting evaluation (`base_value + Σ curve(input)`)
-- Per-dab pressure interpolation across the segment (matches libmypaint's `update_states_and_setting_values` step)
-- `slow_tracking` smoothing of the cursor path
-- Speed slowness low-pass (`speed1_slowness`, `speed2_slowness`) → `speed1`/`speed2` inputs
-- Distance + time based dab spacing (`dabs_per_actual_radius`, `dabs_per_basic_radius`, `dabs_per_second`)
-- Tilt inputs (`tilt`, `tilt_declination`, `tilt_ascension`) with libmypaint's default of 90° declination
-- Per-dab HSV drift via `change_color_h` / `change_color_v` / `change_color_hsv_s`
-- Smudge bucket sampling and mixing
+**Stroke engine** (libmypaint-faithful port of `update_states_and_setting_values`)
+- Per-dab setting evaluation (`base_value + Σ curve(input)`) with per-dab interpolation of pressure / speed across each segment
+- `slow_tracking` + `slow_tracking_per_dab` cursor lag, with `count_dabs_to` re-counted after every dab
+- Speed low-pass (`speed1_slowness` / `speed2_slowness`) and `speed1_gamma` / `speed2_gamma` log mapping
+- `direction_filter` low-pass on stroke direction (with the 180°-folded variant for 1D direction curves)
+- `tracking_noise` gaussian jitter (radius-scaled, distance-coalesced via `skip_distance`)
+- `offset_by_random` / `offset_by_speed` jitter; full `directional_offsets` port (`offset_x/y`, `offset_angle*`, `offset_multiplier`, `STATE.FLIP` mirroring)
+- `radius_by_random` per-dab radius jitter with libmypaint's `(orig / new)²` opacity correction
+- `opaque_linearize` per-dab overlap compensation
+- Tilt inputs (`tilt`, `tilt_declination`, `tilt_ascension`) with the libmypaint 90° declination default and ramp-from-zero seeding
+- `attack_angle` (signed angular difference between pen ascension and stroke direction + 90°)
+- `Stroke` input with `stroke_duration_logarithmic`, `stroke_holdtime`, `stroke_threshold` gating
+- Gridmap inputs (`gridmap_x`, `gridmap_y`) sampled from `STATE.ACTUAL_X/Y` via `gridmap_scale[_x/_y]`
+- Custom input chain (`custom_input_slowness` smoothing `SETTING(custom_input)` into `INPUT(CUSTOM)`)
+- Per-dab HSV / HSL drift (`change_color_h` / `_v` / `_hsv_s` / `_hsl_s` / `change_color_l`)
+- Spectral pigment mix (`paint_mode`) — 10-channel WGM via `rgb_to_spectral` / `spectral_to_rgb` with the `spectral_blend_factor` sigmoid
+- Smudge bucket sampling + mixing with lazy `smudge_length_log`-gated resample (`PREV_COL_RECENTNESS`), `apply_smudge` / `eraser_target_alpha` source-alpha bias, and `smudge_transparency` opacity-gated rejection
 - Fresh-stroke / long-pause detection
 
 **Pixel blending (`draw_dab`)**
 - Normal + Eraser blend in linear sRGB fix15 (premultiplied alpha)
-- Two-segment hardness falloff
+- Spectral `paint_mode` blend (`BlendMode_Normal_and_Eraser_Paint`) with low-alpha additive fade
+- Colorize blend (replace hue/sat, keep value)
+- Two-segment hardness falloff with `anti_aliasing` sub-pixel edge feathering (port of `calculate_rr_antialiased`)
 - Elliptical dabs (`aspect_ratio`, `angle`)
-- `anti_aliasing` edge feathering
-- `lock_alpha` masking
-- `posterize` per-pixel quantization
+- `lock_alpha` masking, `posterize` quantization as its own post-pass (so `paint_mode = 1` brushes still posterize)
+- Spectral `get_color` (`Surface2::get_color_pigment`) for smudge sampling when `paint_mode > 0`
 
-**Infrastructure**
-- Tile-aware traversal across arbitrary canvas extents
-- Deterministic MT19937 PRNG
-- Snapshot regression harness (`hokusai-compat`) with `HOKUSAI_UPDATE_GOLDENS=1`
+**Compatibility**
+- Knuth lagged-Fibonacci PRNG port of libmypaint's `rng-double.c` (TAOCP 3.6-15, KK=10 LL=7 TT=7, seed 1000) with the same `rand_gauss` scaling
+- libmypaint-sourced PNG goldens via a small C wrapper around `mypaint_brush_stroke_to_2` (`cargo xtask regenerate-goldens`)
+- Brush-pack parity tool (`cargo xtask brush-pack-report`) — drives all 196 stock brushes through a fixed pressure-ramp curve. Current state: **137 / 196** stock brushes pass MAD ≤ 0.50, 41 amber (≤ 5.0), 18 red
+- Per-dab tracing (`HOKUSAI_TRACE_DABS=1`) prints identical-format dab lines from both engines for `paste`-diff debugging
+- `HOKUSAI_UPDATE_GOLDENS=1` snapshot harness for in-tree regression
+
+**Infrastructure / backends**
+- Tile-aware traversal across arbitrary canvas extents (64×64 RGBA fix15, libmypaint-identical)
+- `hokusai-tiny-skia` — flatten any `TiledSurface` into a `tiny_skia::Pixmap`
+- `hokusai-wasm` — `wasm-bindgen` JS bindings + browser demo
 - CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.77
 
 ## TODO
 
-### Stroke engine
-- [x] **Speed slowness low-pass** (`speed1_slowness`, `speed2_slowness`) — `1 - exp(-step_dtime / slow)`, advanced per dab
-- [x] **`speed1_gamma` / `speed2_gamma`** mapping (`log(gamma + speed) * m + q` with libmypaint's fix-points)
-- [x] **Tilt-derived inputs** (`tilt_declination` defaults to 90°, `tilt_ascension`)
-- [x] **Per-dab interpolation** of pressure / speed inside a segment
-- [x] **Per-iteration `count_dabs_to`** — re-counted after every dab against the freshly advanced state
-- [x] **`slow_tracking_per_dab`** — lags the dab centre behind the slow-tracked cursor
-- [x] **`opaque_linearize`** — compensates per-dab alpha for overlap
-- [x] **`offset_by_random`** / **`offset_by_speed`** dab position jitter (libmypaint-correct scale)
-- [x] **`tracking_noise`** — gaussian jitter added to the raw input before slow_tracking, scaled by `base_radius`
-- [x] **`attack_angle`** input — smallest angular difference between pen ascension and stroke direction + 90°
-- [x] **`Stroke` input** + `stroke_duration_logarithmic` + `stroke_holdtime` + `stroke_threshold` start/end gating
-- [x] **Gridmap inputs** (`gridmap_x`, `gridmap_y`) sampled from `STATE.ACTUAL_X/Y` via `gridmap_scale[_x/_y]`
-- [x] **Extra inputs** (`tilt_declinationx`, `tilt_declinationy`, `viewzoom`, `barrel_rotation`, `brush_radius`)
-- [x] **Custom input** — `custom_input_slowness` smooths `SETTING(custom_input)` into `INPUT(CUSTOM)` so curves can chain lagged outputs back in
-- [x] **Direction smoothing** — `direction_filter` low-pass on `STATE.DIRECTION_*` and `DIRECTION_ANGLE_*`, with the 180°-folded variant for 1D direction curves
-- [x] **Offset settings** (`offset_x`, `offset_y`, `offset_angle*`, `offset_multiplier`) — full `directional_offsets` port with `STATE.FLIP` mirroring
-- [x] **`tracking_noise` skip coalescing** — events drop into a `skip_distance` window so jitter samples track cursor distance, not input frequency
-- [x] **`radius_by_random`** — per-dab radius gaussian jitter with libmypaint's `(orig / new)² opacity correction
-- [x] **`apply_smudge` / `eraser_target_alpha`** — smudge bucket's alpha drives the dab's source alpha so blender/smear/watercolor brushes thin out instead of bulldozing
-- [x] **Spectral `mix_colors`** — smudge bucket update + apply both run through the libmypaint WGM mix when `paint_mode > 0`
+The brush-pack-report (`cargo xtask brush-pack-report`) is the source of truth
+for what's left. As of the latest run, 18 brushes are red (MAD > 5) and 41 are
+amber. The remaining gaps cluster into:
 
-### Pixel blending
-- [x] **Colorize** — replace dst hue/sat with the dab's, keep dst value
-- [x] **Spectral `paint` mode** — 10-channel pigment WGM blending (libmypaint `BlendMode_Normal_and_Eraser_Paint`), with the `spectral_blend_factor` sigmoid fading to additive at low canvas alpha. Brush JSON's `paint_mode` now binds to the engine setting; the previous `paint` cname was stashing every pigment brush as an unknown setting.
-- [x] **`change_color_hsl_s`** / **`change_color_l`** — HSL-space colour drift
-- [x] Direct `tile_lookup`-free `get_color` path — backends override `TiledSurface::get_color` and forward to `brushmodes::get_color_via_sample` with a per-pixel reader closure
-- [x] **Posterize as its own pass** — runs after Normal + Paint so `paint_mode = 1` brushes still posterize; `posterize_num` JSON value multiplied by 100 and clamped to [1, 128] per libmypaint
-- [x] **Spectral `get_color`** when `paint_mode > 0` — `Surface2::get_color_pigment` ported: mask-weighted running WGM in spectral space, optionally blended with the alpha-weighted linear average by `paint`. Smudge update calls it whenever the brush's `paint_mode` is non-zero.
-- [x] **Smudge lazy resample** — `smudge_length_log`-gated canvas re-sample via `PREV_COL_RECENTNESS` counter; the cached sample is reused while recentness stays above the libmypaint threshold.
-- [x] **`smudge_transparency` rejection** — sampled-alpha-gate around the dab so transparent-canvas-only / opaque-canvas-only smudge brushes behave like libmypaint.
-
-### Compatibility
-- [x] **libmypaint-sourced golden snapshots** — `tools/libmypaint-render/` is a small C wrapper around `mypaint_brush_stroke_to`, and `cargo xtask regenerate-goldens` drives it across the fixture set so `crates/hokusai-compat/fixtures/*.png` is upstream output. `cargo xtask parity-report` renders a side-by-side HTML diff for eyeballing the parity surface
-- [x] **Knuth lagged Fibonacci PRNG** — port of libmypaint's `rng-double.c` (TAOCP 3.6-15) with the same `rand_gauss` scaling (`sum*√3 − 2√3`) and per-dab `random_input` refresh order. Seeding mirrors `rng_double_new(1000)`.
-- [x] **Lossless round-trip** for unknown top-level `.myb` settings (unknown inputs *inside* a known setting are still dropped)
-- [x] **Brush-pack parity tool** — `cargo xtask brush-pack-report` walks `tmp/mypaint-brushes/` (override via `HOKUSAI_BRUSH_PACK`), drives every `.myb` through a fixed pressure-ramp curve in both libmypaint and hokusai (via the Surface2 path so `paint_mode` brushes get real spectral blending on both sides), and writes a sortable Markdown table of per-brush MAD to `tmp/brush-pack-report.md`. Current state: **120 of 196** stock brushes pass MAD ≤ 0.50; another ~55 sit in the amber band (≤ 5.0). Remaining red brushes are mostly RNG-heavy scatter / particle brushes whose dab placements diverge from libmypaint's sequence even when each formula matches.
-
-### Backends
-- [x] **`hokusai-tiny-skia`** — flatten any `TiledSurface` into a `tiny_skia::Pixmap` (over-white or transparent variants), with a `hokusai_compat::render` parity test
-- [x] **`hokusai-wasm`** — `wasm-bindgen` JS bindings + browser demo
+- **RNG-divergent scatter brushes** (`Tail_Feathers`, `Tail_Feathers2`,
+  `Flight_Feathers`, `Fan#1`, `imp_details`, `impressionism`, `puantilism2`,
+  `spray`, `spray2`, `particules_eraser`, `DNA_brush`, `Clouds`, `texture-06`,
+  `oil-0{1,3}-paint`, `coarse_bulk_1`). The individual dab formulas match;
+  the dab *sequence* diverges because some upstream RNG consumer is offset
+  by an unknown count. Use `HOKUSAI_TRACE_DABS=1 paste`-diff (see
+  `CONTRIBUTING.md`) — the first drifting column points at the missing
+  consumer.
+- **Surfacemap-input brushes** (`Posterizer`, `Round#1`). libmypaint's
+  v1.6.1 dylib outputs all-white for these because the reference C wrapper
+  rejects them via surfacemap; hokusai actually paints. Either teach the
+  wrapper to accept these brushes, or skip them in the report.
+- **`anti_aliasing > 1.0` and full-dab feathering edge cases** — landed
+  recently but only covered by one fixture; needs sweep across more brushes.
+- **`hokusai-wasm` demo polish** — pressure curve UI, brush picker, persist
+  canvas. Engine side is feature-complete.
 
 ## Cargo features (umbrella `hokusai` crate)
 
