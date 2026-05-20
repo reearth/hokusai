@@ -13,7 +13,7 @@ readme = "../../README.md"
 
 [dependencies]
 hokusai-core = { workspace = true }
-tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 hokusai-tile-mem = { workspace = true }
