@@ -568,8 +568,11 @@ fn paint_blend_into_tile(
 
                 let mut mix = [0.0_f32; 10];
                 for i in 0..10 {
-                    mix[i] = spec_a[i].max(1e-6).powf(fac_a)
-                        * spec_b[i].max(1e-6).powf(fac_b);
+                    // libmypaint's draw_dab_pixels_BlendMode_Normal_and_Eraser_Paint
+                    // uses fastpow (brushmodes.c:393) for its spectral
+                    // mix. Use the same approximation for parity.
+                    mix[i] = crate::spectral::fastpow(spec_a[i].max(1e-6), fac_a)
+                        * crate::spectral::fastpow(spec_b[i].max(1e-6), fac_b);
                 }
                 let (sr, sg, sb) = spectral_to_rgb(&mix);
 
@@ -933,8 +936,14 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
                             spectral_seeded = true;
                         } else {
                             for i in 0..10 {
-                                avg_spectral[i] = spectral[i].max(1e-6).powf(fac_a)
-                                    * avg_spectral[i].max(1e-6).powf(fac_b);
+                                avg_spectral[i] =
+                                    crate::spectral::fastpow(
+                                        spectral[i].max(1e-6),
+                                        fac_a,
+                                    ) * crate::spectral::fastpow(
+                                        avg_spectral[i].max(1e-6),
+                                        fac_b,
+                                    );
                             }
                         }
                     }

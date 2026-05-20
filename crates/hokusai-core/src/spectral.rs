@@ -17,6 +17,41 @@
 
 const WGM_EPSILON: f32 = 0.001;
 
+/// Approximate `log2(x)` matching libmypaint's `fastlog2` (from Paul
+/// Mineiro's fastapprox library — vendored into libmypaint via
+/// `brushlib/fastapprox/fastlog.h`). Used so hokusai's WGM spectral
+/// mixing produces the same numerical output as libmypaint's
+/// `fastpow` chain.
+#[inline]
+fn fastlog2(x: f32) -> f32 {
+    let vx = x.to_bits();
+    let mx = f32::from_bits((vx & 0x007F_FFFF) | 0x3F00_0000);
+    let y = vx as f32 * 1.192_092_9e-7;
+    y - 124.225_52 - 1.498_030_3 * mx - 1.725_88 / (0.352_088_7 + mx)
+}
+
+/// Approximate `2^p` matching libmypaint's `fastpow2`.
+#[inline]
+fn fastpow2(p: f32) -> f32 {
+    let offset = if p < 0.0 { 1.0 } else { 0.0 };
+    let clipp = if p < -126.0 { -126.0 } else { p };
+    let w = clipp as i32;
+    let z = clipp - w as f32 + offset;
+    let bits = ((1 << 23) as f32
+        * (clipp + 121.274_055 + 27.728_022 / (4.842_525_7 - z) - 1.490_129_1 * z))
+        as u32;
+    f32::from_bits(bits)
+}
+
+/// Approximate `x.powf(p)` matching libmypaint's `fastpow` — relative
+/// error ≈ 2 % per call, but exactly the same arithmetic libmypaint
+/// uses in `mix_colors` and `get_color_pixels_accumulate`, so the
+/// spectral path produces bit-identical output to the reference.
+#[inline]
+pub fn fastpow(x: f32, p: f32) -> f32 {
+    fastpow2(p * fastlog2(x))
+}
+
 const SPECTRAL_R: [f32; 10] = [
     0.009281362787953,
     0.009732627042016,
@@ -152,7 +187,13 @@ pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 
         let spec_b = rgb_to_spectral(b[0], b[1], b[2]);
         let mut mix = [0.0_f32; 10];
         for i in 0..10 {
-            mix[i] = spec_a[i].max(1e-6).powf(sfac_a) * spec_b[i].max(1e-6).powf(sfac_b);
+            // libmypaint uses `fastpow` here (mypaint/brushmodes.c:393,
+            // 475 and helpers.c:587) — its ~2 % relative error is what
+            // its spectral mix output is calibrated against, so matching
+            // the same approximation keeps hokusai's mix arithmetic
+            // numerically aligned.
+            mix[i] = fastpow(spec_a[i].max(1e-6), sfac_a)
+                * fastpow(spec_b[i].max(1e-6), sfac_b);
         }
         let (r, g, b_) = spectral_to_rgb(&mix);
         result[0] = r;
