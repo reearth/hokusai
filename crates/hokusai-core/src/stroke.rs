@@ -431,7 +431,8 @@ impl Brush {
         let mut dabs_moved = state.dist_past_dab;
         let target_x = new_actual_x;
         let target_y = new_actual_y;
-        let slow_per_dab = sv.get(BrushSetting::SlowTrackingPerDab).max(0.0);
+        // SLOW_TRACKING_PER_DAB / SPEED*_SLOWNESS / OFFSET_BY_SPEED_SLOWNESS /
+        // DIRECTION_FILTER are read per-dab from dab_sv after evaluation.
 
         let mut dabs_todo = count_dabs_to(
             cur_x, cur_y, target_x, target_y,
@@ -475,87 +476,14 @@ impl Brush {
             state.declination += step_declination;
             state.declination_x += step_decl_x;
             state.declination_y += step_decl_y;
-            // Lag `cur_ax/cur_ay` behind `cur_x/cur_y` by
-            // `slow_tracking_per_dab`. libmypaint uses
-            // `fac = 1 - exp(-step_ddab / SLOW_TRACKING_PER_DAB)` here, so
-            // larger `slow_per_dab` keeps the dab centre stuck closer to its
-            // previous spot per step.
-            let fac_ax = if slow_per_dab > 1e-3 {
-                1.0 - (-step_ddab / slow_per_dab).exp()
-            } else {
-                1.0
-            };
-            cur_ax += (cur_x - cur_ax) * fac_ax;
-            cur_ay += (cur_y - cur_ay) * fac_ax;
-
-            // Per-step speed slowness (see libmypaint's
-            // `update_states_and_setting_values`).
-            let fac1 = if slow1 > 1e-3 {
-                1.0 - (-step_dtime / slow1).exp()
-            } else {
-                1.0
-            };
-            let fac2 = if slow2 > 1e-3 {
-                1.0 - (-step_dtime / slow2).exp()
-            } else {
-                1.0
-            };
-            state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
-            state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
-
-            // libmypaint also smooths the *vector* velocity (NORM_DX_SLOW /
-            // NORM_DY_SLOW) with its own time constant — used by
-            // `offset_by_speed` to push the dab along the actual motion
-            // direction, including sign. `time_constant = exp(slow * 0.01) - 1`
-            // with a 0.002 floor (a long-standing libmypaint workaround for
-            // a Windows-only zero-filtering bug).
-            let speed_off_slow = sv.get(BrushSetting::OffsetBySpeedSlowness);
-            let speed_off_tc = ((speed_off_slow * 0.01).exp() - 1.0).max(0.002);
-            let fac_dx = if step_dtime > 0.0 {
-                1.0 - (-step_dtime / speed_off_tc).exp()
-            } else {
-                1.0
-            };
-            // norm_dx = step_dx / step_dtime (with viewzoom = 1)
-            if step_dtime > 0.0 {
-                let norm_dx = step_dx / step_dtime;
-                let norm_dy = step_dy / step_dtime;
-                state.norm_dx_slow += (norm_dx - state.norm_dx_slow) * fac_dx;
-                state.norm_dy_slow += (norm_dy - state.norm_dy_slow) * fac_dx;
-            }
-
-            // Direction filter: libmypaint smooths two direction vectors
-            // here, both gated on `direction_filter`. The smoothing
-            // strength uses `step_in_dabtime = hypot(step_dx, step_dy)`
-            // so a wider step pulls the smoothed direction further along
-            // toward the current motion. DIRECTION_DX/DY is 180°-folded
-            // (so back-and-forth strokes don't flip the input), while
-            // DIRECTION_ANGLE_DX/DY tracks the full 360°.
-            let dir_filter = sv.get(BrushSetting::DirectionFilter).max(0.0);
-            let dir_time_const = (dir_filter * 0.5).exp() - 1.0;
-            let step_in_dabtime = (step_dx * step_dx + step_dy * step_dy).sqrt();
-            let dir_fac = if dir_time_const > 1e-3 {
-                1.0 - (-step_in_dabtime / dir_time_const).exp()
-            } else {
-                1.0
-            };
-            // 360° tracker first (uses the raw step vector).
-            state.direction_angle_dx += (step_dx - state.direction_angle_dx) * dir_fac;
-            state.direction_angle_dy += (step_dy - state.direction_angle_dy) * dir_fac;
-            // 180°-folded tracker: pick the closer of ±(step_dx, step_dy)
-            // to the previous direction so the smoothed vector doesn't
-            // oscillate when the stroke reverses.
-            let (mut dx_for_dir, mut dy_for_dir) = (step_dx, step_dy);
-            let dx_old = state.direction_dx;
-            let dy_old = state.direction_dy;
-            let pos_dist = (dx_old - dx_for_dir).powi(2) + (dy_old - dy_for_dir).powi(2);
-            let neg_dist = (dx_old + dx_for_dir).powi(2) + (dy_old + dy_for_dir).powi(2);
-            if pos_dist > neg_dist {
-                dx_for_dir = -dx_for_dir;
-                dy_for_dir = -dy_for_dir;
-            }
-            state.direction_dx += (dx_for_dir - state.direction_dx) * dir_fac;
-            state.direction_dy += (dy_for_dir - state.direction_dy) * dir_fac;
+            // libmypaint's update_states_and_setting_values evaluates ALL
+            // SETTINGS using PRE-update STATE values (line 728), then
+            // updates STATE (slow_tracking_per_dab / norm_speed_slow /
+            // norm_dx/dy_slow / direction_dx/dy) using the freshly
+            // evaluated SETTING smoothing factors. Tilt is the exception
+            // — it's a raw event delta and stays before evaluation.
+            // The state-update block moves to AFTER dab_sv = evaluate so
+            // INPUT(DIRECTION) / INPUT(SPEED*) sample the lagged values.
 
             // libmypaint's update_states_and_setting_values evaluates ALL
             // settings using the PRE-advance STROKE, and only advances
@@ -658,6 +586,68 @@ impl Brush {
             let dab_sv = evaluate(self, &dab_inputs);
             let dab_radius = dab_sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
             state.actual_radius = dab_radius;
+
+            // ===== Post-evaluate STATE updates (libmypaint:732-797) =====
+            let slow_per_dab_d =
+                dab_sv.get(BrushSetting::SlowTrackingPerDab).max(0.0);
+            let fac_ax = if slow_per_dab_d > 1e-3 {
+                1.0 - (-step_ddab / slow_per_dab_d).exp()
+            } else {
+                1.0
+            };
+            cur_ax += (cur_x - cur_ax) * fac_ax;
+            cur_ay += (cur_y - cur_ay) * fac_ax;
+
+            let slow1_d = dab_sv.get(BrushSetting::Speed1Slowness).max(0.0);
+            let slow2_d = dab_sv.get(BrushSetting::Speed2Slowness).max(0.0);
+            let fac1 = if slow1_d > 1e-3 {
+                1.0 - (-step_dtime / slow1_d).exp()
+            } else {
+                1.0
+            };
+            let fac2 = if slow2_d > 1e-3 {
+                1.0 - (-step_dtime / slow2_d).exp()
+            } else {
+                1.0
+            };
+            state.norm_speed1_slow += (raw_speed - state.norm_speed1_slow) * fac1;
+            state.norm_speed2_slow += (raw_speed - state.norm_speed2_slow) * fac2;
+
+            let speed_off_slow_d = dab_sv.get(BrushSetting::OffsetBySpeedSlowness);
+            let speed_off_tc = ((speed_off_slow_d * 0.01).exp() - 1.0).max(0.002);
+            let fac_dx = if step_dtime > 0.0 {
+                1.0 - (-step_dtime / speed_off_tc).exp()
+            } else {
+                1.0
+            };
+            if step_dtime > 0.0 {
+                let norm_dx = step_dx / step_dtime;
+                let norm_dy = step_dy / step_dtime;
+                state.norm_dx_slow += (norm_dx - state.norm_dx_slow) * fac_dx;
+                state.norm_dy_slow += (norm_dy - state.norm_dy_slow) * fac_dx;
+            }
+
+            let dir_filter_d = dab_sv.get(BrushSetting::DirectionFilter).max(0.0);
+            let dir_time_const = (dir_filter_d * 0.5).exp() - 1.0;
+            let step_in_dabtime = (step_dx * step_dx + step_dy * step_dy).sqrt();
+            let dir_fac = if dir_time_const > 1e-3 {
+                1.0 - (-step_in_dabtime / dir_time_const).exp()
+            } else {
+                1.0
+            };
+            state.direction_angle_dx += (step_dx - state.direction_angle_dx) * dir_fac;
+            state.direction_angle_dy += (step_dy - state.direction_angle_dy) * dir_fac;
+            let (mut dx_for_dir, mut dy_for_dir) = (step_dx, step_dy);
+            let dx_old = state.direction_dx;
+            let dy_old = state.direction_dy;
+            let pos_dist = (dx_old - dx_for_dir).powi(2) + (dy_old - dy_for_dir).powi(2);
+            let neg_dist = (dx_old + dx_for_dir).powi(2) + (dy_old + dy_for_dir).powi(2);
+            if pos_dist > neg_dist {
+                dx_for_dir = -dx_for_dir;
+                dy_for_dir = -dy_for_dir;
+            }
+            state.direction_dx += (dx_for_dir - state.direction_dx) * dir_fac;
+            state.direction_dy += (dy_for_dir - state.direction_dy) * dir_fac;
 
             // Advance STATE.STROKE by this step's normalised distance,
             // using the per-dab evaluated stroke_duration / stroke_holdtime
