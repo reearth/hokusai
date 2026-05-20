@@ -193,10 +193,14 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     // which over-included pixels for elliptical brushes but produced
     // identical output (the rr > 1 check filters them out).
     let r_ext = radius + 1.0;
+    // libmypaint floors all four corners (mypaint-tiled-surface.c:350-353)
+    // — hokusai used ceil for x1/y1 which picked up one extra row/column
+    // of pixels past where upstream stopped. For the AA path those edge
+    // pixels render with sub-pixel weight, so the difference is real.
     let x0 = (dab.x - r_ext).floor() as i32;
     let y0 = (dab.y - r_ext).floor() as i32;
-    let x1 = (dab.x + r_ext).ceil() as i32;
-    let y1 = (dab.y + r_ext).ceil() as i32;
+    let x1 = (dab.x + r_ext).floor() as i32;
+    let y1 = (dab.y + r_ext).floor() as i32;
 
     let tx0 = x0.div_euclid(TILE_SIZE as i32);
     let ty0 = y0.div_euclid(TILE_SIZE as i32);
