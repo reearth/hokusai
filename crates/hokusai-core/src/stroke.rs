@@ -60,35 +60,39 @@ impl Brush {
         if !state.started || dtime >= 5.0 {
             // libmypaint's stroke_to_internal runs the tracking_noise block
             // (mypaint-brush.c:1373-1389) BEFORE the `dtime > max_dtime`
-            // brush_reset path (line 1396). When TRACKING_NOISE is set, that
-            // means each fresh-stroke / warm-up event also consumes 2
-            // `rand_gauss` draws (= 8 `rng_double_next` units), even though
-            // its output is then discarded by the reset. hokusai was
-            // skipping straight to the reset path, so the RNG sequence was
-            // off by 2 gauss draws on every brush with tracking_noise > 0
-            // (imp_details, impressionism, puantilism2, oil-paint family,
-            // …) from the very first real dab onwards.
+            // brush_reset path (line 1396). When TRACKING_NOISE is set
+            // that means each fresh-stroke / warm-up event consumes 2
+            // `rand_gauss` draws (= 8 `rng_double_next` units) AND folds
+            // the noisy x/y into STATE.X/Y via the brush_reset's explicit
+            // `STATE.X = x; STATE.Y = y;` assignment at line 1404-1405
+            // (after the reset's memset). hokusai used to skip straight
+            // to the reset path with the raw `x, y`, losing both the RNG
+            // sequence offset AND the per-stroke initial noise vector.
             let base_radius_init =
                 self.get(BrushSetting::Radius).base_value.exp().clamp(0.2, 1000.0);
             let noise_init =
                 base_radius_init * self.get(BrushSetting::TrackingNoise).base_value;
+            let (mut seed_x, mut seed_y) = (x, y);
             if noise_init > 0.001 {
-                let _ = state.rng.next_gauss();
-                let _ = state.rng.next_gauss();
+                seed_x += state.rng.next_gauss() * noise_init;
+                seed_y += state.rng.next_gauss() * noise_init;
             }
             // libmypaint then sets `self->random_input = rng_double_next()`
             // inside the reset branch — match that so the first real event
             // sees the same `INPUT(RANDOM)` value.
             state.random_input = state.rng.next_unit();
-            state.last_event_x = x;
-            state.last_event_y = y;
+            // libmypaint stores the post-noise x/y as STATE.X/Y after the
+            // reset (mypaint-brush.c:1404-1405). Use seed_x/seed_y so the
+            // next event's interpolation starts from the noisy seed.
+            state.last_event_x = seed_x;
+            state.last_event_y = seed_y;
             state.last_event_time += dtime;
-            state.actual_x = x;
-            state.actual_y = y;
-            state.actual_dab_x = x;
-            state.actual_dab_y = y;
-            state.last_dab_x = x;
-            state.last_dab_y = y;
+            state.actual_x = seed_x;
+            state.actual_y = seed_y;
+            state.actual_dab_x = seed_x;
+            state.actual_dab_y = seed_y;
+            state.last_dab_x = seed_x;
+            state.last_dab_y = seed_y;
             state.dist_past_dab = 0.0;
             // Seed dynamic color from the brush's base color so per-dab drift
             // has somewhere to start.
