@@ -105,9 +105,7 @@
     colorInput.addEventListener("input", applyColour);
     sizeInput.addEventListener("input", applySize);
     clearBtn.addEventListener("click", () => {
-      // Cheapest "clear": recreate the canvas object.
-      const w = canvasEl.width, h = canvasEl.height;
-      Object.assign(canvas, new HokusaiCanvas(w, h));
+      canvas.clear();
       flush();
     });
 

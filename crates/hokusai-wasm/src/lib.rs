@@ -117,6 +117,13 @@ impl HokusaiCanvas {
         self.state.reset();
     }
 
+    /// Drop all painted tiles and reset stroke state. Cheaper and safer than
+    /// reconstructing the canvas object on the JS side.
+    pub fn clear(&mut self) {
+        self.surface = MemSurface::new();
+        self.state.reset();
+    }
+
     /// Feed one pointer event. `dtime` is seconds since the previous call.
     ///
     /// `xtilt` / `ytilt` are pen tilt in [-1, 1], matching libmypaint's
