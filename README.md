@@ -119,7 +119,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - Tile-aware traversal across arbitrary canvas extents (64×64 RGBA fix15, libmypaint-identical)
 - `hokusai-tiny-skia` — flatten any `TiledSurface` into a `tiny_skia::Pixmap`
 - `hokusai-wasm` — `wasm-bindgen` JS bindings + browser demo
-- CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.85
+- CI: fmt, clippy `-Dwarnings`, test on Linux/macOS/Windows, wasm32 build check, MSRV 1.88
 
 ## TODO
 

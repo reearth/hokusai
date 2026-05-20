@@ -377,9 +377,7 @@ fn paint_into_tile(
             // below 3 px; for larger dabs the plain rr formula doesn't
             // alias visibly.
             let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(
-                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
-                )
+                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
             } else {
                 rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
             };
@@ -535,9 +533,7 @@ fn paint_blend_into_tile(
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
             let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(
-                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
-                )
+                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
             } else {
                 rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
             };
@@ -645,20 +641,14 @@ fn posterize_pass_into_tile(
         for lx in lx0..=lx1 {
             let px = (ox + lx as i32) as f32;
             let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(
-                    px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start,
-                )
+                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
             } else {
                 rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
             };
             if rr > 1.0 {
                 continue;
             }
-            let mut opa = if rr <= 1.0 {
-                opa_at(rr, hardness)
-            } else {
-                0.0
-            };
+            let mut opa = if rr <= 1.0 { opa_at(rr, hardness) } else { 0.0 };
             opa *= opaque;
             if opa <= 0.0 {
                 continue;
@@ -759,7 +749,12 @@ where
     // dark RGB.
     let alpha = sum_a / sum_w;
     if alpha <= 0.0 {
-        return RgbaF32 { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+        return RgbaF32 {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
     }
     RgbaF32 {
         r: (sum_r / sum_a).clamp(0.0, 1.0),
@@ -958,13 +953,11 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
                         } else {
                             for i in 0..10 {
                                 avg_spectral[i] =
-                                    crate::spectral::fastpow(
-                                        spectral[i].max(1e-6),
-                                        fac_a,
-                                    ) * crate::spectral::fastpow(
-                                        avg_spectral[i].max(1e-6),
-                                        fac_b,
-                                    );
+                                    crate::spectral::fastpow(spectral[i].max(1e-6), fac_a)
+                                        * crate::spectral::fastpow(
+                                            avg_spectral[i].max(1e-6),
+                                            fac_b,
+                                        );
                             }
                         }
                     }
@@ -1033,7 +1026,14 @@ mod tests {
     fn get_color_via_sample_averages_solid_fill() {
         // Sample a 5×5 region painted pure red at full alpha. The
         // mask-weighted average should be ≈ (1, 0, 0, 1).
-        let sample = |_px: i32, _py: i32| [crate::fix15::FIX15_ONE as u16, 0, 0, crate::fix15::FIX15_ONE as u16];
+        let sample = |_px: i32, _py: i32| {
+            [
+                crate::fix15::FIX15_ONE as u16,
+                0,
+                0,
+                crate::fix15::FIX15_ONE as u16,
+            ]
+        };
         let c = get_color_via_sample(2.0, 2.0, 1.0, sample);
         assert!((c.r - 1.0).abs() < 1e-3, "red: {}", c.r);
         assert!(c.g.abs() < 1e-3);

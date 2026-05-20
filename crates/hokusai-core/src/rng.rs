@@ -1,3 +1,7 @@
+// The loops in this module mirror libmypaint's `rng-double.c` line-for-line;
+// rewriting them with iterator combinators would obscure the C correspondence.
+#![allow(clippy::needless_range_loop, clippy::manual_memcpy)]
+
 //! libmypaint-compatible PRNG.
 //!
 //! Port of Knuth's TAOCP 3.6 exercise 3.6-15 lagged-Fibonacci-via-`mod_sum`

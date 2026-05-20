@@ -37,6 +37,8 @@ impl InputMapping {
                 // the last segment, with the same special case applied).
                 let (mut x0, mut y0) = p[0];
                 let (mut x1, mut y1) = p[1];
+                #[allow(clippy::needless_range_loop)]
+                // libmypaint's mapping_calculate walks indices; iterator rewrite would obscure
                 for i in 2..p.len() {
                     if x <= x1 {
                         break;

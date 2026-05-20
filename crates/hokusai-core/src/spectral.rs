@@ -1,3 +1,8 @@
+// The SPECTRAL_{R,G,B} tables below are libmypaint-sourced constants written
+// at higher precision than f32 can store — the extra digits document the
+// upstream value, even though they round identically. Don't lint them.
+#![allow(clippy::excessive_precision)]
+
 //! Spectral upsampling / downsampling for libmypaint's pigment-style
 //! "paint" blend mode.
 //!
@@ -192,8 +197,7 @@ pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 
             // its spectral mix output is calibrated against, so matching
             // the same approximation keeps hokusai's mix arithmetic
             // numerically aligned.
-            mix[i] = fastpow(spec_a[i].max(1e-6), sfac_a)
-                * fastpow(spec_b[i].max(1e-6), sfac_b);
+            mix[i] = fastpow(spec_a[i].max(1e-6), sfac_a) * fastpow(spec_b[i].max(1e-6), sfac_b);
         }
         let (r, g, b_) = spectral_to_rgb(&mix);
         result[0] = r;

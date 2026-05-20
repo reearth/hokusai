@@ -36,7 +36,11 @@ use tiny_skia::{Pixmap, PremultipliedColorU8};
 /// resulting sRGB-encoded, premultiplied `Pixmap`. The output never has
 /// translucent pixels: anywhere the brush didn't paint reads as pure
 /// white at full opacity.
-pub fn flatten_over_white<S: TiledSurface + ?Sized>(surface: &S, width: u32, height: u32) -> Pixmap {
+pub fn flatten_over_white<S: TiledSurface + ?Sized>(
+    surface: &S,
+    width: u32,
+    height: u32,
+) -> Pixmap {
     flatten(surface, width, height, true)
 }
 
@@ -76,11 +80,14 @@ fn flatten<S: TiledSurface + ?Sized>(
             let Some(tile) = surface.tile_lookup(tx, ty) else {
                 continue;
             };
+            #[allow(clippy::needless_range_loop)]
+            // pixel coords feed wx/wy bounds checks; iterator rewrite loses clarity
             for ly in 0..TILE_SIZE {
                 let wy = ty * ts + ly as i32;
                 if wy < 0 || wy >= height as i32 {
                     continue;
                 }
+                #[allow(clippy::needless_range_loop)]
                 for lx in 0..TILE_SIZE {
                     let wx = tx * ts + lx as i32;
                     if wx < 0 || wx >= width as i32 {

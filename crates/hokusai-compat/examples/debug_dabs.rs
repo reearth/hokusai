@@ -24,7 +24,9 @@ fn main() {
     // first event's position so the trace lines up with `libmypaint-render`
     // (which does the same and prints from the same starting state).
     if let Some(first) = script.events.first() {
-        brush.stroke_to(&mut state, &mut surf, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+        brush.stroke_to(
+            &mut state, &mut surf, first[0], first[1], 0.0, 0.0, 0.0, 10.0,
+        );
         surf.count = 0; // reset dab counter so dab#1 == first painted dab
     }
     for (i, ev) in script.events.iter().enumerate() {

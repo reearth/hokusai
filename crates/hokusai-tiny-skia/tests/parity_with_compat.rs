@@ -4,7 +4,7 @@
 //! pipelines has bit-rotted.
 
 use hokusai_compat::{load_brush, load_script, render};
-use hokusai_core::{Brush, BrushState, TiledSurface};
+use hokusai_core::{Brush, BrushState};
 use hokusai_tile_mem::MemSurface;
 use hokusai_tiny_skia::flatten_over_white;
 
@@ -18,7 +18,16 @@ fn render_to_surface(brush: &Brush, script: &hokusai_compat::Script) -> MemSurfa
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
     if let Some(first) = script.events.first() {
-        brush.stroke_to(&mut state, &mut surface, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+        brush.stroke_to(
+            &mut state,
+            &mut surface,
+            first[0],
+            first[1],
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+        );
     }
     for ev in &script.events {
         brush.stroke_to(

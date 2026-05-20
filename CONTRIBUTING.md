@@ -5,8 +5,8 @@ and propose changes to hokusai.
 
 ## Prerequisites
 
-- Rust **1.85** or newer (the project's MSRV — `edition2024` deps such
-  as `pxfm` via `image` require it). `rustup` is the easiest path.
+- Rust **1.88** or newer (the project's MSRV — `image` v0.25.10 requires
+  it transitively). `rustup` is the easiest path.
 - For the `wasm32-unknown-unknown` build check:
   `rustup target add wasm32-unknown-unknown`.
 

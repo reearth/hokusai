@@ -114,7 +114,10 @@ fn cmd_regenerate(filter: Option<&str>) {
     let mut failed = 0;
     for path in &entries {
         if let Some(f) = filter {
-            if !path.file_stem().is_some_and(|s| s.to_string_lossy().contains(f)) {
+            if !path
+                .file_stem()
+                .is_some_and(|s| s.to_string_lossy().contains(f))
+            {
                 continue;
             }
         }
@@ -153,7 +156,10 @@ fn cmd_parity_report() {
     // file on mismatch, so passing fixtures otherwise leave stale images
     // sitting on disk — exactly what made earlier parity reports show
     // unchanged charcoal output after charcoal was fixed.
-    eprintln!("rendering current hokusai actuals for {} fixtures…", entries.len());
+    eprintln!(
+        "rendering current hokusai actuals for {} fixtures…",
+        entries.len()
+    );
     for path in &entries {
         if let Err(e) = render_actual(path) {
             eprintln!("FAIL {}: {e}", path.display());
@@ -223,11 +229,10 @@ fn cmd_parity_report() {
 }
 
 fn render_actual(script_path: &std::path::Path) -> Result<(), String> {
-    let script = hokusai_compat::load_script(script_path)
-        .map_err(|e| format!("load script: {e}"))?;
+    let script =
+        hokusai_compat::load_script(script_path).map_err(|e| format!("load script: {e}"))?;
     let brush_path = script_path.parent().unwrap().join(&script.brush);
-    let brush = hokusai_compat::load_brush(&brush_path)
-        .map_err(|e| format!("load brush: {e}"))?;
+    let brush = hokusai_compat::load_brush(&brush_path).map_err(|e| format!("load brush: {e}"))?;
     let pixels = hokusai_compat::render(&brush, &script);
     let actual = script_path.with_extension("actual.png");
     image::save_buffer(
@@ -313,7 +318,13 @@ fn cmd_brush_pack_report() {
         eprint!("\r[{}/{}] {label:<60}", i + 1, mybs.len());
 
         let lmp_path = root.join("tmp/_lmp_pack.png");
-        let lmp_bytes = match run_libmypaint(&wrapper, &script_path, brush_path, script.width, script.height) {
+        let lmp_bytes = match run_libmypaint(
+            &wrapper,
+            &script_path,
+            brush_path,
+            script.width,
+            script.height,
+        ) {
             Ok(b) => b,
             Err(e) => {
                 rows.push((label, f32::NAN, 0, 0));

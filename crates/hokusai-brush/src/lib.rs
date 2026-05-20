@@ -173,10 +173,8 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
                 // participate in evaluation — newer brush packs that ship
                 // exotic inputs will lose dynamics until those inputs are
                 // implemented, but the JSON survives a round trip.
-                sv.unknown_inputs.insert(
-                    iname,
-                    points.into_iter().map(|p| (p[0], p[1])).collect(),
-                );
+                sv.unknown_inputs
+                    .insert(iname, points.into_iter().map(|p| (p[0], p[1])).collect());
                 continue;
             };
             sv.inputs.push(InputMapping {
@@ -211,10 +209,7 @@ pub fn to_string_pretty(brush: &Brush) -> Result<String, Error> {
             })
             .collect();
         for (iname, pts) in &sv.unknown_inputs {
-            inputs.insert(
-                iname.clone(),
-                pts.iter().map(|(x, y)| [*x, *y]).collect(),
-            );
+            inputs.insert(iname.clone(), pts.iter().map(|(x, y)| [*x, *y]).collect());
         }
         settings.insert(
             setting.cname().to_string(),

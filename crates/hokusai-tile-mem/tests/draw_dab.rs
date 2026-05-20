@@ -101,31 +101,13 @@ fn lock_alpha_paints_only_inside_existing_alpha() {
     assert_eq!(untouched, [0, 0, 0, 0]);
 }
 
-#[test]
-fn anti_aliasing_softens_hard_edge() {
-    // Solid-disk dab (hardness=1) with AA off: rr ≤ 1 is fully opaque,
-    // rr > 1 is fully transparent — so the pixel just outside the radius
-    // is 0. With AA on, that pixel gets a partial fade.
-    let mut without_aa = MemSurface::new();
-    let mut with_aa = MemSurface::new();
-
-    let mut dab = red_dab(32.0, 32.0, 5.0);
-    dab.hardness = 1.0;
-    without_aa.draw_dab(&dab);
-
-    dab.anti_aliasing = 1.0;
-    with_aa.draw_dab(&dab);
-
-    // Pixel (37, 32) is ~5.5 px from dab center — just outside the 5-px radius
-    // but inside the AA feather band when aa is enabled.
-    let outside_off = without_aa.tile(0, 0).map(|t| t[32][37][3]).unwrap_or(0);
-    let outside_on = with_aa.tile(0, 0).map(|t| t[32][37][3]).unwrap_or(0);
-    assert_eq!(outside_off, 0, "no AA: outside is fully transparent");
-    assert!(
-        outside_on > 0,
-        "AA: outside pixel should have some coverage, got {outside_on}"
-    );
-}
+// The previous `anti_aliasing_softens_hard_edge` test exercised the
+// pre-libmypaint AA dial which scaled feather width with the
+// `anti_aliasing` setting. The libmypaint-correct port fires sub-pixel
+// AA unconditionally for `radius < 3` via `calculate_rr_antialiased`,
+// so the `anti_aliasing` dab field is no longer the on/off switch the
+// test assumed. AA correctness is now covered by the libmypaint
+// brush-pack parity harness.
 
 #[test]
 fn colorize_replaces_hue_keeps_value() {

@@ -67,7 +67,16 @@ pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
     // event renders dabs (with pressure interpolating from 0 → its value)
     // instead of being consumed as hokusai's own seed.
     if let Some(first) = script.events.first() {
-        brush.stroke_to(&mut state, &mut surface, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+        brush.stroke_to(
+            &mut state,
+            &mut surface,
+            first[0],
+            first[1],
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+        );
     }
     for ev in &script.events {
         brush.stroke_to(
@@ -97,7 +106,16 @@ pub fn render_with_finish(brush: &Brush, script: &Script) -> Vec<u8> {
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
     if let Some(first) = script.events.first() {
-        brush.stroke_to(&mut state, &mut surface, first[0], first[1], 0.0, 0.0, 0.0, 10.0);
+        brush.stroke_to(
+            &mut state,
+            &mut surface,
+            first[0],
+            first[1],
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+        );
     }
     for ev in &script.events {
         brush.stroke_to(

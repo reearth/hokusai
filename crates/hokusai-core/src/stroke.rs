@@ -68,10 +68,12 @@ impl Brush {
             // (after the reset's memset). hokusai used to skip straight
             // to the reset path with the raw `x, y`, losing both the RNG
             // sequence offset AND the per-stroke initial noise vector.
-            let base_radius_init =
-                self.get(BrushSetting::Radius).base_value.exp().clamp(0.2, 1000.0);
-            let noise_init =
-                base_radius_init * self.get(BrushSetting::TrackingNoise).base_value;
+            let base_radius_init = self
+                .get(BrushSetting::Radius)
+                .base_value
+                .exp()
+                .clamp(0.2, 1000.0);
+            let noise_init = base_radius_init * self.get(BrushSetting::TrackingNoise).base_value;
             let (mut seed_x, mut seed_y) = (x, y);
             if noise_init > 0.001 {
                 seed_x += state.rng.next_gauss() * noise_init;
@@ -171,10 +173,7 @@ impl Brush {
         // restarts at 0; otherwise we'll advance it per dab below by
         // `norm_dist * exp(-stroke_duration_logarithmic)` and wrap on
         // `1 + stroke_holdtime`.
-        let stroke_threshold = self
-            .get(BrushSetting::StrokeThreshold)
-            .base_value
-            .max(0.0);
+        let stroke_threshold = self.get(BrushSetting::StrokeThreshold).base_value.max(0.0);
         const STROKE_EPS: f32 = 0.0001;
         if !state.stroke_started && pressure > stroke_threshold + STROKE_EPS {
             state.stroke_started = true;
@@ -270,7 +269,11 @@ impl Brush {
         // Several downstream calculations (offset_by_random jitter, the
         // dabs_per_basic_radius term, tracking_noise) scale by it rather
         // than the current dab radius.
-        let base_radius = self.get(BrushSetting::Radius).base_value.exp().clamp(0.2, 1000.0);
+        let base_radius = self
+            .get(BrushSetting::Radius)
+            .base_value
+            .exp()
+            .clamp(0.2, 1000.0);
 
         // --- Resolve actual radius ------------------------------------------
         // libmypaint's `radius_logarithmic` is stored as `ln(radius)`, so the
@@ -342,8 +345,7 @@ impl Brush {
         }
 
         let (mut noisy_x, mut noisy_y) = (x, y);
-        let noise_mag =
-            base_radius * self.get(BrushSetting::TrackingNoise).base_value.max(0.0);
+        let noise_mag = base_radius * self.get(BrushSetting::TrackingNoise).base_value.max(0.0);
         if noise_mag > 0.001 {
             // Arm the next skip window so subsequent events that arrive
             // before the cursor has travelled `0.5 * noise` pixels get
@@ -439,21 +441,32 @@ impl Brush {
         // DIRECTION_FILTER are read per-dab from dab_sv after evaluation.
 
         let mut dabs_todo = count_dabs_to(
-            cur_x, cur_y, target_x, target_y,
-            entry_radius, base_radius,
-            dpar, dpbr, dps,
+            cur_x,
+            cur_y,
+            target_x,
+            target_y,
+            entry_radius,
+            base_radius,
+            dpar,
+            dpbr,
+            dps,
             dtime_left,
-            dab_angle_rad, aspect,
+            dab_angle_rad,
+            aspect,
         );
         let mut painted = false;
-        let mut dab_inputs = inputs.clone();
+        let mut dab_inputs = inputs;
 
         // The first iteration only consumes `1 - dabs_moved` of a dab so the
         // accumulator picks up wherever the previous event left off. After
         // that every iteration is a full unit dab. Mirrors libmypaint's
         // `step_ddab = (dabs_moved > 0) ? (1 - dabs_moved) : 1.0`.
         while dabs_moved + dabs_todo >= 1.0 {
-            let step_ddab = if dabs_moved > 0.0 { 1.0 - dabs_moved } else { 1.0 };
+            let step_ddab = if dabs_moved > 0.0 {
+                1.0 - dabs_moved
+            } else {
+                1.0
+            };
             dabs_moved = 0.0;
             let frac = (step_ddab / dabs_todo.max(1e-6)).clamp(0.0, 1.0);
 
@@ -572,12 +585,10 @@ impl Brush {
             let gscale_x = sv.get(BrushSetting::GridmapScaleX);
             let gscale_y = sv.get(BrushSetting::GridmapScaleY);
             let scaled_size = gscale * GRID_SIZE;
-            let mut gx = (cur_ax * gscale_x).abs().rem_euclid(scaled_size)
-                / scaled_size
-                * GRID_SIZE;
-            let mut gy = (cur_ay * gscale_y).abs().rem_euclid(scaled_size)
-                / scaled_size
-                * GRID_SIZE;
+            let mut gx =
+                (cur_ax * gscale_x).abs().rem_euclid(scaled_size) / scaled_size * GRID_SIZE;
+            let mut gy =
+                (cur_ay * gscale_y).abs().rem_euclid(scaled_size) / scaled_size * GRID_SIZE;
             if cur_ax < 0.0 {
                 gx = GRID_SIZE - gx;
             }
@@ -592,8 +603,7 @@ impl Brush {
             state.actual_radius = dab_radius;
 
             // ===== Post-evaluate STATE updates (libmypaint:732-797) =====
-            let slow_per_dab_d =
-                dab_sv.get(BrushSetting::SlowTrackingPerDab).max(0.0);
+            let slow_per_dab_d = dab_sv.get(BrushSetting::SlowTrackingPerDab).max(0.0);
             let fac_ax = if slow_per_dab_d > 1e-3 {
                 1.0 - (-step_ddab / slow_per_dab_d).exp()
             } else {
@@ -660,15 +670,11 @@ impl Brush {
             // signal), otherwise modulos `1 + stroke_holdtime` so periodic
             // stroke-driven curves cycle.
             {
-                let stroke_freq = (-dab_sv
-                    .get(BrushSetting::StrokeDurationLogarithmic))
-                    .exp();
-                let stroke_wrap = 1.0
-                    + dab_sv.get(BrushSetting::StrokeHoldtime).max(0.0);
-                let step_dist = (step_dx * step_dx + step_dy * step_dy).sqrt()
-                    / base_radius.max(1e-3);
-                let mut stroke_advance =
-                    (state.stroke_state + step_dist * stroke_freq).max(0.0);
+                let stroke_freq = (-dab_sv.get(BrushSetting::StrokeDurationLogarithmic)).exp();
+                let stroke_wrap = 1.0 + dab_sv.get(BrushSetting::StrokeHoldtime).max(0.0);
+                let step_dist =
+                    (step_dx * step_dx + step_dy * step_dy).sqrt() / base_radius.max(1e-3);
+                let mut stroke_advance = (state.stroke_state + step_dist * stroke_freq).max(0.0);
                 if stroke_advance >= stroke_wrap {
                     if stroke_wrap > 10.9 {
                         stroke_advance = 1.0;
@@ -764,8 +770,7 @@ impl Brush {
             // `smudge_transparency`.
             // libmypaint evaluates SMUDGE and SMUDGE_LENGTH per-dab.
             let smudge_amt = dab_sv.get(BrushSetting::Smudge).clamp(0.0, 1.0);
-            let smudge_length =
-                dab_sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
+            let smudge_length = dab_sv.get(BrushSetting::SmudgeLength).clamp(0.0, 1.0);
             let mut skip_dab = false;
             // libmypaint: enter update_smudge_color when
             //   smudge_length < 1.0 && (SMUDGE != 0 || mapping not constant)
@@ -773,18 +778,14 @@ impl Brush {
             // that hits 0 at one dab still decays its recentness counter
             // and stays in step with the reference.
             if smudge_length < 1.0 && smudge_mapping_active {
-                let smudge_length_log =
-                    dab_sv.get(BrushSetting::SmudgeLengthLog);
+                let smudge_length_log = dab_sv.get(BrushSetting::SmudgeLengthLog);
                 let mut update_factor = smudge_length.max(0.01);
 
                 // Decay the existing recentness; if it falls below the
                 // libmypaint threshold we resample the canvas.
                 let recentness = state.prev_col_recentness * update_factor;
                 state.prev_col_recentness = recentness;
-                let threshold = (0.5 * update_factor)
-                    .powf(smudge_length_log)
-                    .min(1.0)
-                    + 1e-16;
+                let threshold = (0.5 * update_factor).powf(smudge_length_log).min(1.0) + 1e-16;
 
                 let (sr, sg, sb, sa) = if recentness < threshold {
                     // First call after a long pause initialises the
@@ -794,31 +795,23 @@ impl Brush {
                     }
                     state.prev_col_recentness = 1.0;
 
-                    let smudge_radius_log =
-                        dab_sv.get(BrushSetting::SmudgeRadiusLog);
+                    let smudge_radius_log = dab_sv.get(BrushSetting::SmudgeRadiusLog);
                     // libmypaint feeds the post-radius_by_random radius
                     // into update_smudge_color (`radius` at
                     // mypaint-brush.c:1044, reassigned in the
                     // radius_by_random branch a few lines earlier). For
                     // brushes whose noise meaningfully shifts the radius
                     // the smudge sample needs to scale with it.
-                    let smudge_radius = (state.actual_radius
-                        * smudge_radius_log.exp())
-                        .clamp(0.2, 1000.0);
+                    let smudge_radius =
+                        (state.actual_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
                     // libmypaint's `update_smudge_color` passes
                     // `legacy_smudge ? -1.0 : paint_factor` to
                     // `surface2_get_color`. paint_mode > 0 triggers
                     // the spectral averaging; otherwise legacy
                     // sampling (mask-weighted linear, straight alpha).
-                    let paint_for_sample =
-                        dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                    let paint_for_sample = dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
                     let sample = if paint_for_sample > 0.0 {
-                        surface.get_color_pigment(
-                            px,
-                            py,
-                            smudge_radius,
-                            paint_for_sample,
-                        )
+                        surface.get_color_pigment(px, py, smudge_radius, paint_for_sample)
                     } else {
                         surface.get_color(px, py, smudge_radius)
                     };
@@ -828,11 +821,9 @@ impl Brush {
                     // is *more* transparent than the threshold;
                     // negative: skip when *more* opaque than the
                     // mirror threshold.
-                    let smudge_op_lim =
-                        dab_sv.get(BrushSetting::SmudgeTransparency);
+                    let smudge_op_lim = dab_sv.get(BrushSetting::SmudgeTransparency);
                     if (smudge_op_lim > 0.0 && sample.a < smudge_op_lim)
-                        || (smudge_op_lim < 0.0
-                            && sample.a > -smudge_op_lim)
+                        || (smudge_op_lim < 0.0 && sample.a > -smudge_op_lim)
                     {
                         skip_dab = true;
                     }
@@ -852,8 +843,7 @@ impl Brush {
 
                 if !skip_dab {
                     let fac = update_factor;
-                    let paint_mode =
-                        dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                    let paint_mode = dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
                     if paint_mode > 0.0 {
                         if sa > 0.01 {
                             let prev = [
@@ -863,29 +853,21 @@ impl Brush {
                                 state.smudge_a,
                             ];
                             let cur = [sr, sg, sb, sa];
-                            let mixed = crate::spectral::mix_colors(
-                                prev, cur, fac, paint_mode,
-                            );
+                            let mixed = crate::spectral::mix_colors(prev, cur, fac, paint_mode);
                             state.smudge_ra = mixed[0];
                             state.smudge_ga = mixed[1];
                             state.smudge_ba = mixed[2];
                             state.smudge_a = mixed[3];
                         } else {
-                            state.smudge_a =
-                                (state.smudge_a + sa) * 0.5;
+                            state.smudge_a = (state.smudge_a + sa) * 0.5;
                         }
                     } else {
                         // Legacy smudge: SMUDGE_R += (1-fac)*a*r.
                         let fac_new = (1.0 - fac) * sa;
-                        state.smudge_ra =
-                            state.smudge_ra * fac + sr * fac_new;
-                        state.smudge_ga =
-                            state.smudge_ga * fac + sg * fac_new;
-                        state.smudge_ba =
-                            state.smudge_ba * fac + sb * fac_new;
-                        state.smudge_a = (state.smudge_a * fac
-                            + (1.0 - fac) * sa)
-                            .clamp(0.0, 1.0);
+                        state.smudge_ra = state.smudge_ra * fac + sr * fac_new;
+                        state.smudge_ga = state.smudge_ga * fac + sg * fac_new;
+                        state.smudge_ba = state.smudge_ba * fac + sb * fac_new;
+                        state.smudge_a = (state.smudge_a * fac + (1.0 - fac) * sa).clamp(0.0, 1.0);
                     }
                 }
             }
@@ -911,16 +893,21 @@ impl Brush {
             // update_states_and_setting_values lines 807-809), so the
             // recount inside the loop uses the freshly-evaluated per-dab
             // aspect / angle. Match that here.
-            let next_aspect =
-                dab_sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
-            let next_angle_rad =
-                dab_sv.get(BrushSetting::EllipticalDabAngle).to_radians();
+            let next_aspect = dab_sv.get(BrushSetting::EllipticalDabRatio).max(1.0);
+            let next_angle_rad = dab_sv.get(BrushSetting::EllipticalDabAngle).to_radians();
             dabs_todo = count_dabs_to(
-                cur_x, cur_y, target_x, target_y,
-                dab_radius, base_radius,
-                dpar, dpbr, dps,
+                cur_x,
+                cur_y,
+                target_x,
+                target_y,
+                dab_radius,
+                base_radius,
+                dpar,
+                dpbr,
+                dps,
                 dtime_left,
-                next_angle_rad, next_aspect,
+                next_angle_rad,
+                next_aspect,
             );
         }
 
@@ -1058,12 +1045,16 @@ fn build_dab(
     //    `apply_smudge` helper for the legacy / spectral split.
     let smudge_amt = smudge_amt.clamp(0.0, 1.0);
     let paint_mode = sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
-    let eraser_target_alpha =
-        ((1.0 - smudge_amt) + smudge_amt * state.smudge_a).clamp(0.0, 1.0);
+    let eraser_target_alpha = ((1.0 - smudge_amt) + smudge_amt * state.smudge_a).clamp(0.0, 1.0);
     let mixed_rgb = if smudge_amt <= 0.0 || eraser_target_alpha <= 0.0 {
         [base.r, base.g, base.b]
     } else if paint_mode > 0.0 {
-        let smudge_color = [state.smudge_ra, state.smudge_ga, state.smudge_ba, state.smudge_a];
+        let smudge_color = [
+            state.smudge_ra,
+            state.smudge_ga,
+            state.smudge_ba,
+            state.smudge_a,
+        ];
         let brush_color = [base.r, base.g, base.b, 1.0];
         let mixed = crate::spectral::mix_colors(smudge_color, brush_color, smudge_amt, paint_mode);
         [
@@ -1149,10 +1140,7 @@ fn build_dab(
     // without going full opaque — without it, hokusai's tails of a
     // pressure ramp keep painting at the unmodulated `opaque` value while
     // libmypaint's drop to near zero.
-    let opaque_linearize = brush
-        .get(BrushSetting::OpaqueLinearize)
-        .base_value
-        .max(0.0);
+    let opaque_linearize = brush.get(BrushSetting::OpaqueLinearize).base_value.max(0.0);
     if opaque_linearize > 0.0 && opaque > 0.0 {
         // libmypaint's non-legacy path reads DABS_PER_* from STATE
         // (mypaint-brush.c:970), which is the per-dab SETTING value
@@ -1339,10 +1327,7 @@ fn directional_offsets(
     let mut dy = sv.get(BrushSetting::OffsetY);
 
     let offset_angle_adj = sv.get(BrushSetting::OffsetAngleAdj);
-    let stroke_angle_deg = direction_angle_dy
-        .atan2(direction_angle_dx)
-        .to_degrees()
-        - 90.0;
+    let stroke_angle_deg = direction_angle_dy.atan2(direction_angle_dx).to_degrees() - 90.0;
     let stroke_angle_deg = stroke_angle_deg.rem_euclid(360.0);
     let viewrotation = 0.0_f32;
 
@@ -1551,8 +1536,14 @@ mod tests {
         // Pressure below threshold: started stays false, but dabs still land.
         brush.stroke_to(&mut state, &mut surf, 0.0, 0.0, 0.3, 0.0, 0.0, 0.01);
         brush.stroke_to(&mut state, &mut surf, 20.0, 0.0, 0.3, 0.0, 0.0, 0.01);
-        assert!(surf.count > 0, "stroke_threshold no longer gates dab emission");
-        assert!(!state.stroke_started, "0.3 < threshold 0.5, started stays off");
+        assert!(
+            surf.count > 0,
+            "stroke_threshold no longer gates dab emission"
+        );
+        assert!(
+            !state.stroke_started,
+            "0.3 < threshold 0.5, started stays off"
+        );
 
         // Above threshold (after a seed pass): started flips on and
         // stroke_state restarts at 0.
@@ -1562,8 +1553,14 @@ mod tests {
         brush.stroke_to(&mut s2, &mut surf2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01);
         s2.stroke_state = 0.7;
         brush.stroke_to(&mut s2, &mut surf2, 1.0, 0.0, 0.8, 0.0, 0.0, 0.01);
-        assert!(s2.stroke_started, "pressure above threshold sets started=true");
-        assert_eq!(s2.stroke_state, 0.0, "rising-edge reset wipes prior stroke_state");
+        assert!(
+            s2.stroke_started,
+            "pressure above threshold sets started=true"
+        );
+        assert_eq!(
+            s2.stroke_state, 0.0,
+            "rising-edge reset wipes prior stroke_state"
+        );
     }
 
     #[test]
