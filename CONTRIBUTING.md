@@ -87,6 +87,65 @@ as `<name>.actual.png` for inspection.
 > `crates/hokusai-compat/src/lib.rs` for the path to upgrading the goldens
 > to upstream libmypaint output.
 
+## libmypaint parity testing
+
+For checking hokusai against the real libmypaint reference, run
+
+```sh
+./scripts/setup-parity.sh
+```
+
+once to:
+
+1. Install `libmypaint`, `json-c`, and `pkg-config` (Homebrew on macOS;
+   `apt` / `dnf` / `pacman` on Linux).
+2. Clone the upstream brush pack into `tmp/mypaint-brushes/` (CC0,
+   <https://github.com/mypaint/mypaint-brushes>).
+3. Build the small C wrapper under `tools/libmypaint-render/` that
+   drives `mypaint_brush_stroke_to_2` and dumps raw RGBA8.
+
+After that, the two parity commands are:
+
+```sh
+# Per-brush MAD table (196 brushes, written to tmp/brush-pack-report.md)
+cargo xtask brush-pack-report
+
+# HTML side-by-side gallery for the hokusai-compat fixture set
+cargo xtask parity-report
+```
+
+`HOKUSAI_BRUSH_PACK=/some/dir` overrides the brush-pack location;
+both commands rebuild the C wrapper on demand. Goldens for the
+compat-fixture set live next to each script in
+`crates/hokusai-compat/fixtures/`.
+
+### Per-dab tracing
+
+`HOKUSAI_TRACE_DABS=1` makes both engines print every emitted dab to
+stderr in the same format:
+
+```
+  hok#1: ( 21.75, 76.66) r= 1.16 hard=0.59 opaq=0.00 aspect=8.65 ang=  0.0 paint=0.00
+  lmp#1: ( 21.66, 76.70) r= 1.17 hard=0.59 opaq=0.08 aspect=8.39 ang=-180.0 paint=0.00
+```
+
+So a quick line-for-line diff:
+
+```sh
+HOKUSAI_TRACE_DABS=1 cargo xtask brush-pack-report 2> hok.log
+HOKUSAI_TRACE_DABS=1 ./tools/libmypaint-render/libmypaint-render \
+    tmp/_brush_pack_script.json \
+    "$(realpath tmp/mypaint-brushes/brushes/classic/imp_details.myb)" \
+    > /dev/null 2> lmp.log
+paste <(grep hok# hok.log) <(grep lmp# lmp.log) | less
+```
+
+The dab field that drifts first is almost always the next bug to
+fix. The session that landed the
+`paint_mode default`, `STATE.DECLINATION ramp`, `state-update reorder`,
+warm-up RNG, and seed-with-noise commits used this technique
+exclusively.
+
 ## Code style
 
 - **No `unsafe`.** The engine is pure-safe Rust by design.
