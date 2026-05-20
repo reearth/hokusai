@@ -18,31 +18,41 @@ impl InputMapping {
         }
     }
 
-    /// Evaluate the piecewise-linear curve at `x`. Outside the knot range we
-    /// extend with the slope of the nearest segment (libmypaint behaviour).
+    /// Evaluate the piecewise-linear curve at `x`. Mirrors libmypaint's
+    /// `mypaint_mapping_calculate` (mypaint-mapping.c): starts with the
+    /// first two knots, walks forward while `x > x1`, and if the resulting
+    /// bracket has `x0 == x1` or `y0 == y1` returns `y0` directly to dodge
+    /// division by zero on duplicate-x knots (Dieterle/Posterizer's
+    /// opaque_multiply curve has `[(0,0),(0,1),(1,1)]` exactly).
     pub fn eval(&self, x: f32) -> f32 {
         let p = &self.points;
         match p.len() {
             0 => 0.0,
             1 => p[0].1,
             _ => {
-                if x <= p[0].0 {
-                    let (x0, y0) = p[0];
-                    let (x1, y1) = p[1];
-                    let slope = (y1 - y0) / (x1 - x0);
-                    y0 + slope * (x - x0)
-                } else if x >= p[p.len() - 1].0 {
-                    let (x0, y0) = p[p.len() - 2];
-                    let (x1, y1) = p[p.len() - 1];
-                    let slope = (y1 - y0) / (x1 - x0);
-                    y1 + slope * (x - x1)
+                // libmypaint scans the points left-to-right starting from the
+                // second one; whatever segment we land on at the end of the
+                // scan is what gets used (which means below-range input
+                // clamps to the first segment, above-range extrapolates from
+                // the last segment, with the same special case applied).
+                let (mut x0, mut y0) = p[0];
+                let (mut x1, mut y1) = p[1];
+                for i in 2..p.len() {
+                    if x <= x1 {
+                        break;
+                    }
+                    x0 = x1;
+                    y0 = y1;
+                    x1 = p[i].0;
+                    y1 = p[i].1;
+                }
+                if x0 == x1 || y0 == y1 {
+                    y0
                 } else {
-                    // Linear search is fine: curves have ≤ ~8 knots in practice.
-                    let i = p.iter().position(|(px, _)| *px > x).unwrap();
-                    let (x0, y0) = p[i - 1];
-                    let (x1, y1) = p[i];
-                    let t = (x - x0) / (x1 - x0);
-                    y0 + t * (y1 - y0)
+                    // Linear interpolation. The formula matches libmypaint's
+                    // `(y1*(x-x0) + y0*(x1-x)) / (x1-x0)` and extrapolates
+                    // naturally when x is outside [x0, x1].
+                    (y1 * (x - x0) + y0 * (x1 - x)) / (x1 - x0)
                 }
             }
         }
@@ -92,5 +102,43 @@ mod tests {
         };
         assert!((m.eval(2.0) - 4.0).abs() < 1e-6);
         assert!((m.eval(-1.0) - (-2.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn duplicate_x_returns_first_y() {
+        // Dieterle/Posterizer's opaque_multiply: `[(0,0),(0,1),(1,1)]`.
+        // libmypaint walks left-to-right and reads y0 at duplicate-x or
+        // duplicate-y knots. Before this was fixed, hokusai produced NaN
+        // for the x = 0 input because the first segment had Δx = 0.
+        let m = InputMapping {
+            input: BrushInput::Pressure,
+            points: vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)],
+        };
+        assert_eq!(m.eval(0.0), 0.0);
+        assert_eq!(m.eval(0.5), 1.0);
+        assert_eq!(m.eval(1.0), 1.0);
+        // Below the first knot still uses the first segment, returning y0.
+        assert_eq!(m.eval(-0.5), 0.0);
+    }
+
+    #[test]
+    fn staircase_curve_steps_correctly() {
+        // Dieterle/Posterizer's custom_input random curve is a staircase
+        // built from duplicated x knots that step the y value at each
+        // tenth. Verify a couple of step boundaries.
+        let m = InputMapping {
+            input: BrushInput::Random,
+            points: vec![
+                (0.0, -10.0),
+                (0.1, -10.0),
+                (0.1, -8.0),
+                (0.2, -8.0),
+                (0.2, -6.0),
+                (0.3, -6.0),
+            ],
+        };
+        assert_eq!(m.eval(0.05), -10.0);
+        assert_eq!(m.eval(0.15), -8.0);
+        assert_eq!(m.eval(0.25), -6.0);
     }
 }
