@@ -187,8 +187,12 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     // the libmypaint-correct `r_aa_start` path computed above.
     let _ = dab.anti_aliasing;
 
-    // Conservative AABB: enlarge by aspect_ratio so the rotated ellipse fits.
-    let r_ext = radius * aspect + 1.0;
+    // libmypaint's AABB is `radius + 1` for both axes — the elliptical
+    // dab's extent in WORLD coords is bounded by the major axis (radius),
+    // regardless of rotation. hokusai used to use `radius * aspect + 1`
+    // which over-included pixels for elliptical brushes but produced
+    // identical output (the rr > 1 check filters them out).
+    let r_ext = radius + 1.0;
     let x0 = (dab.x - r_ext).floor() as i32;
     let y0 = (dab.y - r_ext).floor() as i32;
     let x1 = (dab.x + r_ext).ceil() as i32;
