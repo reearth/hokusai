@@ -58,11 +58,27 @@ impl Brush {
 
         // --- Fresh stroke: seed state, no dabs ------------------------------
         if !state.started || dtime >= 5.0 {
-            // libmypaint sets `self->random_input = rng_double_next()` inside
-            // its `dtime > max_dtime || reset_requested` branch, before
-            // returning without drawing. Mirror that so the first real event
-            // after the warm-up sees the same `INPUT(RANDOM)` value as
-            // libmypaint does.
+            // libmypaint's stroke_to_internal runs the tracking_noise block
+            // (mypaint-brush.c:1373-1389) BEFORE the `dtime > max_dtime`
+            // brush_reset path (line 1396). When TRACKING_NOISE is set, that
+            // means each fresh-stroke / warm-up event also consumes 2
+            // `rand_gauss` draws (= 8 `rng_double_next` units), even though
+            // its output is then discarded by the reset. hokusai was
+            // skipping straight to the reset path, so the RNG sequence was
+            // off by 2 gauss draws on every brush with tracking_noise > 0
+            // (imp_details, impressionism, puantilism2, oil-paint family,
+            // …) from the very first real dab onwards.
+            let base_radius_init =
+                self.get(BrushSetting::Radius).base_value.exp().clamp(0.2, 1000.0);
+            let noise_init =
+                base_radius_init * self.get(BrushSetting::TrackingNoise).base_value;
+            if noise_init > 0.001 {
+                let _ = state.rng.next_gauss();
+                let _ = state.rng.next_gauss();
+            }
+            // libmypaint then sets `self->random_input = rng_double_next()`
+            // inside the reset branch — match that so the first real event
+            // sees the same `INPUT(RANDOM)` value.
             state.random_input = state.rng.next_unit();
             state.last_event_x = x;
             state.last_event_y = y;
