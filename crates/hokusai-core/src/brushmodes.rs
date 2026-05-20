@@ -775,9 +775,13 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let Some(tile) = surface.tile_lookup(tx, ty) else {
-                continue;
-            };
+            // libmypaint's get_color_internal requests each tile in the
+            // sample radius unconditionally; tiles that don't exist yet
+            // come back as transparent (alpha 0) but still contribute
+            // their mask weight to sum_weight. Mirroring that here keeps
+            // smudge brushes sampling near the canvas edge in step with
+            // libmypaint instead of overweighting the painted pixels.
+            let tile_opt = surface.tile_lookup(tx, ty);
             let ox = tx * TILE_SIZE as i32;
             let oy = ty * TILE_SIZE as i32;
             let lx0 = (x0 - ox).max(0) as usize;
@@ -796,12 +800,14 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
                         continue;
                     }
                     let w = opa_at(rr, 0.5);
-                    let p = tile[ly][lx];
-                    sum_r += fix15::to_f32(p[0]) * w;
-                    sum_g += fix15::to_f32(p[1]) * w;
-                    sum_b += fix15::to_f32(p[2]) * w;
-                    sum_a += fix15::to_f32(p[3]) * w;
                     sum_w += w;
+                    if let Some(tile) = tile_opt {
+                        let p = tile[ly][lx];
+                        sum_r += fix15::to_f32(p[0]) * w;
+                        sum_g += fix15::to_f32(p[1]) * w;
+                        sum_b += fix15::to_f32(p[2]) * w;
+                        sum_a += fix15::to_f32(p[3]) * w;
+                    }
                 }
             }
         }
@@ -864,9 +870,12 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let Some(tile) = surface.tile_lookup(tx, ty) else {
-                continue;
-            };
+            // libmypaint requests every tile in the sample bounds —
+            // non-existent tiles contribute their mask weight (with
+            // alpha = 0) so the running averages stay normalised against
+            // the full disc area. Iterate the pixel range even when the
+            // tile is missing so sum_weight tracks libmypaint.
+            let tile_opt = surface.tile_lookup(tx, ty);
             let ox = tx * TILE_SIZE as i32;
             let oy = ty * TILE_SIZE as i32;
             let lx0 = (x0 - ox).max(0) as usize;
@@ -885,9 +894,12 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
                         continue;
                     }
                     let mask = opa_at(rr, 0.5);
+                    sum_weight += mask;
+                    let Some(tile) = tile_opt else {
+                        continue;
+                    };
                     let p = tile[ly][lx];
                     let pa = fix15::to_f32(p[3]);
-                    sum_weight += mask;
                     // `a` is the pixel's alpha contribution weighted by
                     // the mask, matching libmypaint's
                     // `a = mask[0] * rgba[3] / (1 << 30)`.
