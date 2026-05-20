@@ -146,10 +146,33 @@ impl HokusaiCanvas {
     }
 
     /// Return the canvas as RGBA8 in sRGB, composited over white.
-    /// JS copies via `ImageData.data.set(canvas.pixels())`.
+    /// JS copies via `ImageData.data.set(canvas.pixels())`. wasm-bindgen
+    /// can't return a borrowed slice across the JS boundary, so the
+    /// `Vec<u8>` materialisation is forced; the underlying `flatten` writes
+    /// in-place into the canvas's own buffer first, so the per-frame cost
+    /// is one memcpy into the JS Uint8Array.
     pub fn pixels(&mut self) -> Vec<u8> {
         flatten(&self.surface, self.width, self.height, &mut self.pixels);
         self.pixels.clone()
+    }
+
+    /// Pointer + length accessors for callers that want to skip the
+    /// `pixels()` copy entirely: JS can construct
+    /// `new Uint8Array(memory.buffer, canvas.pixels_ptr(),
+    /// canvas.pixels_len())` and `ImageData.data.set` directly from
+    /// wasm memory. Call `flush_pixels()` first to refresh the buffer.
+    pub fn flush_pixels(&mut self) {
+        flatten(&self.surface, self.width, self.height, &mut self.pixels);
+    }
+
+    #[wasm_bindgen(js_name = pixelsPtr)]
+    pub fn pixels_ptr(&self) -> *const u8 {
+        self.pixels.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = pixelsLen)]
+    pub fn pixels_len(&self) -> usize {
+        self.pixels.len()
     }
 
     #[wasm_bindgen(getter)]

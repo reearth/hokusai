@@ -207,9 +207,11 @@ impl BrushState {
     /// Reset back to the "no stroke in progress" state, preserving the PRNG
     /// stream so re-strokes are reproducible.
     pub fn reset(&mut self) {
-        let rng = self.rng.clone();
-        *self = Self::new(0);
-        self.rng = rng;
+        let mut fresh = Self::new(0);
+        // Move the existing RNG into `fresh` so it survives the `*self =
+        // fresh` assignment — no clone of the lagged-Fibonacci buffer.
+        std::mem::swap(&mut fresh.rng, &mut self.rng);
+        *self = fresh;
     }
 }
 

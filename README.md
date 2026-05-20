@@ -11,11 +11,11 @@ A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/lib
 
 ## Goals
 
-- **Pure Rust, no `unsafe`** — clean WASM (`wasm32-unknown-unknown`) story.
-- **libmypaint `.myb` JSON compatibility** — brushes authored for MyPaint / Krita load and round-trip without translation.
-- **Pixel-level parity with libmypaint** — same fix15 math, same tile layout, same stroke math. Compatibility is the design priority; the "Hokusai" name does not imply behavioural divergence.
-- **Pluggable surfaces** via the `TiledSurface` trait. Backends are split into feature-gated crates.
-- **Tile-based infinite canvas** — 64×64 RGBA fix15 tiles, matching libmypaint exactly so dab traversal and rounding stay bit-identical.
+- 🦀 **Pure Rust, no `unsafe`** — clean WASM (`wasm32-unknown-unknown`) story.
+- 📦 **libmypaint `.myb` JSON compatibility** — brushes authored for MyPaint / Krita load and round-trip without translation.
+- 🎯 **Pixel-level parity with libmypaint** — same fix15 math, same tile layout, same stroke math. Compatibility is the design priority; the "Hokusai" name does not imply behavioural divergence.
+- 🔌 **Pluggable surfaces** via the `TiledSurface` trait. Backends are split into feature-gated crates.
+- 🗺️ **Tile-based infinite canvas** — 64×64 RGBA fix15 tiles, matching libmypaint exactly so dab traversal and rounding stay bit-identical.
 
 ## Workspace layout
 
