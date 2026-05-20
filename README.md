@@ -9,7 +9,7 @@ A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/lib
 
 🎨 **[Try the live demo](https://reearth.github.io/hokusai/)** — draws in your browser using the real libmypaint brushes, with stylus pressure and tilt where the device supports it.
 
-The full pipeline — `.myb` brush load → stroke engine → dab blend on tiles — is implemented and can render real libmypaint brushes (`charcoal`, `calligraphy`, `marker_fat`, …). Pixel-level parity with libmypaint is the goal; the gap is tracked in [TODO](#todo).
+**libmypaint parity: 137 / 196 stock brushes (≈ 70 %) match libmypaint at MAD ≤ 0.5** under the brush-pack parity harness, with another 41 inside MAD ≤ 5. Measured against libmypaint v1.6.1 + the upstream [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) pack via [`cargo xtask brush-pack-report`](#libmypaint-parity). The full pipeline — `.myb` load → stroke engine → dab blend on tiles — renders real libmypaint brushes (`charcoal`, `calligraphy`, `marker_fat`, …); remaining gaps are tracked in [TODO](#todo).
 
 ## Goals
 
@@ -63,12 +63,12 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ## Features
 
-**Brush data**
+🖌️ **Brush data**
 - All ~50 libmypaint settings as a strongly-typed enum with canonical string keys
 - All inputs (`pressure`, `speed1/2`, `random`, `stroke`, `direction`, `tilt`, `custom`, `gridmap_*`, `attack_angle`, `viewzoom`, `barrel_rotation`, `brush_radius`, `tilt_declinationx/y`, …)
 - `.myb` v3 JSON parse / serialize, round-trip safe (unknown top-level settings preserved verbatim)
 
-**Stroke engine** (libmypaint-faithful port of `update_states_and_setting_values`)
+✏️ **Stroke engine** (libmypaint-faithful port of `update_states_and_setting_values`)
 - Per-dab setting evaluation (`base_value + Σ curve(input)`) with per-dab interpolation of pressure / speed across each segment
 - `slow_tracking` + `slow_tracking_per_dab` cursor lag, with `count_dabs_to` re-counted after every dab
 - Speed low-pass (`speed1_slowness` / `speed2_slowness`) and `speed1_gamma` / `speed2_gamma` log mapping
@@ -87,7 +87,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - Smudge bucket sampling + mixing with lazy `smudge_length_log`-gated resample (`PREV_COL_RECENTNESS`), `apply_smudge` / `eraser_target_alpha` source-alpha bias, and `smudge_transparency` opacity-gated rejection
 - Fresh-stroke / long-pause detection
 
-**Pixel blending (`draw_dab`)**
+🎨 **Pixel blending (`draw_dab`)**
 - Normal + Eraser blend in linear sRGB fix15 (premultiplied alpha)
 - Spectral `paint_mode` blend (`BlendMode_Normal_and_Eraser_Paint`) with low-alpha additive fade
 - Colorize blend (replace hue/sat, keep value)
@@ -96,14 +96,14 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 - `lock_alpha` masking, `posterize` quantization as its own post-pass (so `paint_mode = 1` brushes still posterize)
 - Spectral `get_color` (`Surface2::get_color_pigment`) for smudge sampling when `paint_mode > 0`
 
-**Compatibility**
+🔬 **Compatibility** <a id="libmypaint-parity"></a>
 - Knuth lagged-Fibonacci PRNG port of libmypaint's `rng-double.c` (TAOCP 3.6-15, KK=10 LL=7 TT=7, seed 1000) with the same `rand_gauss` scaling
 - libmypaint-sourced PNG goldens via a small C wrapper around `mypaint_brush_stroke_to_2` (`cargo xtask regenerate-goldens`)
 - Brush-pack parity tool (`cargo xtask brush-pack-report`) — drives all 196 stock brushes through a fixed pressure-ramp curve. Current state: **137 / 196** stock brushes pass MAD ≤ 0.50, 41 amber (≤ 5.0), 18 red
 - Per-dab tracing (`HOKUSAI_TRACE_DABS=1`) prints identical-format dab lines from both engines for `paste`-diff debugging
 - `HOKUSAI_UPDATE_GOLDENS=1` snapshot harness for in-tree regression
 
-**Infrastructure / backends**
+🧱 **Infrastructure / backends**
 - Tile-aware traversal across arbitrary canvas extents (64×64 RGBA fix15, libmypaint-identical)
 - `hokusai-tiny-skia` — flatten any `TiledSurface` into a `tiny_skia::Pixmap`
 - `hokusai-wasm` — `wasm-bindgen` JS bindings + browser demo
@@ -129,8 +129,6 @@ amber. The remaining gaps cluster into:
   wrapper to accept these brushes, or skip them in the report.
 - **`anti_aliasing > 1.0` and full-dab feathering edge cases** — landed
   recently but only covered by one fixture; needs sweep across more brushes.
-- **`hokusai-wasm` demo polish** — pressure curve UI, brush picker, persist
-  canvas. Engine side is feature-complete.
 
 ## Cargo features (umbrella `hokusai` crate)
 
