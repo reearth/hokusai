@@ -58,7 +58,13 @@ fn apply_libmypaint_defaults(brush: &mut Brush) {
         (GridmapScaleX, 1.0),
         (GridmapScaleY, 1.0),
         (PosterizeNum, 0.05),
-        (Paint, 1.0),
+        // libmypaint v1.6.1's compiled default for PAINT_MODE is 0.0,
+        // NOT the 1.0 the current master brushsettings.json shows
+        // (the JSON was bumped post-v1.6.1 but our reference dylib
+        // uses the older C-side `setting_info()->def` of 0.0). Tracing
+        // an imp_details stroke through libmypaint shows paint=0.00
+        // on every dab — proof the runtime default is 0, not 1.
+        (Paint, 0.0),
     ];
     for (setting, def) in DEFAULTS {
         if brush.get(*setting).base_value == 0.0
