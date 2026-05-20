@@ -1121,7 +1121,10 @@ fn build_dab(
     // pressure, so skipping it makes them look wrong at non-full pressure.
     // libmypaint defaults opaque_multiply to 1.0; treat a wholly-default
     // setting (no base value and no input curves) as that identity.
-    let opaque_raw = sv.get(BrushSetting::Opaque).clamp(0.0, 2.0);
+    // libmypaint applies only MAX(0.0, ...) to OPAQUE before multiplying
+    // with OPAQUE_MULTIPLY (mypaint-brush.c:957). The final product is
+    // clamped to [0, 1] downstream.
+    let opaque_raw = sv.get(BrushSetting::Opaque).max(0.0);
     let opaque_mult = opaque_multiplier(brush, sv);
     let mut opaque = (opaque_raw * opaque_mult * opaque_scale).clamp(0.0, 1.0);
 
