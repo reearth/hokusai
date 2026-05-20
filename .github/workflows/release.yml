@@ -52,12 +52,32 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
-      # cargo (>= 1.90) resolves the dependency order and waits for index
-      # propagation between each upload. `publish = false` crates are skipped.
+      # Publish each crate in dependency-topological order. Re-running the
+      # release for a tag (e.g. after a partial failure) is idempotent: any
+      # crate whose `<name>@<version>` is already on crates.io is skipped
+      # with a notice, so the workflow only attempts the *missing* crates.
+      # `cargo publish --workspace` would fail hard on the first already-
+      # uploaded crate, which is why we drive the loop manually.
       - name: Publish workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --workspace
+        run: |
+          set +e
+          for crate in hokusai-core hokusai-brush hokusai-tile-mem hokusai-tiny-skia hokusai-wasm hokusai; do
+            echo "::group::cargo publish -p $crate"
+            output=$(cargo publish -p "$crate" 2>&1)
+            status=$?
+            echo "$output"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              if echo "$output" | grep -qE "already (uploaded|exists)"; then
+                echo "::notice::$crate already published, skipping"
+              else
+                echo "::error::$crate publish failed"
+                exit "$status"
+              fi
+            fi
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
