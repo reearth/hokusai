@@ -105,18 +105,21 @@ impl Brush {
             // Seed the smoothed tilt state at the event's input so the
             // first dab doesn't lerp away from a stale value.
             let m = (xtilt * xtilt + ytilt * ytilt).sqrt().min(1.0);
-            state.ascension = if xtilt == 0.0 && ytilt == 0.0 {
-                0.0
-            } else {
-                (-xtilt).atan2(ytilt).to_degrees()
-            };
-            state.declination = if xtilt == 0.0 && ytilt == 0.0 {
-                90.0
-            } else {
-                90.0 - m * 60.0
-            };
-            state.declination_x = xtilt * 60.0;
-            state.declination_y = ytilt * 60.0;
+            // libmypaint's brush_reset (mypaint-brush.c:159) zeroes the
+            // entire STATE struct via memset. tilt_declination /
+            // tilt_ascension only ramp toward their no-tilt defaults
+            // (90 / 0) once the per-dab step deltas in
+            // update_states_and_setting_values run. hokusai used to
+            // seed declination at 90 here, so curves keyed on
+            // tilt_declination saw the saturated 90° value from the
+            // first dab onwards instead of libmypaint's ramp.
+            state.ascension = 0.0;
+            state.declination = 0.0;
+            state.declination_x = 0.0;
+            state.declination_y = 0.0;
+            // Silence unused warnings — xtilt/ytilt/m are still in scope
+            // for later seed steps (state.X / state.Y).
+            let _ = (xtilt, ytilt, m);
             state.started = true;
             return false;
         }

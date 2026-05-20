@@ -165,8 +165,14 @@ impl BrushState {
             skip_last_y: 0.0,
             skipped_dtime: 0.0,
             ascension: 0.0,
-            // libmypaint defaults declination to 90° (pen straight up).
-            declination: 90.0,
+            // libmypaint zero-initialises STATE via brush_reset's memset
+            // (mypaint-brush.c:159) — DECLINATION starts at 0 and ramps
+            // toward 90 (the no-tilt target) over the per-dab step
+            // deltas of the first event. Hokusai used to seed this at
+            // 90 outright, so curves keyed on tilt_declination saw the
+            // saturated 90° value from the first dab instead of the
+            // libmypaint ramp.
+            declination: 0.0,
             declination_x: 0.0,
             declination_y: 0.0,
             stroke_total_painting_time: 0.0,
