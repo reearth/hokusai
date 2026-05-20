@@ -155,6 +155,16 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     if dab.radius < 0.1 || dab.hardness <= 0.0 || dab.opaque <= 0.0 {
         return false;
     }
+    if std::env::var("HOKUSAI_TRACE_DABS").is_ok() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        eprintln!(
+            "  hok#{}: ({:6.2},{:6.2}) r={:5.2} hard={:4.2} opaq={:4.2} aspect={:4.2} ang={:6.1} paint={:4.2}",
+            n, dab.x, dab.y, dab.radius, dab.hardness, dab.opaque,
+            dab.aspect_ratio, dab.angle, dab.paint,
+        );
+    }
     // libmypaint rejects radius < 0.1 above and otherwise renders with
     // the actual radius (mypaint-tiled-surface.c:575). hokusai used to
     // floor at 0.5 here, which made very thin pencils render thicker.
