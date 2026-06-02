@@ -1,0 +1,26 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: hokusai
+  namespace: reearth
+  description: Pure Rust brush engine inspired by libmypaint — WASM-ready, with .myb
+    compatibility
+  annotations:
+    github.com/project-slug: reearth/hokusai
+  links:
+  - url: https://github.com/reearth/hokusai
+    title: GitHub
+    icon: github
+  - url: https://reearth.github.io/hokusai/
+    title: Website
+    icon: web
+  tags:
+  - rust
+  - brush-engine
+  - graphics
+  - libmypaint
+  - mypaint
+spec:
+  type: service
+  lifecycle: experimental
+  owner: reearth/cto-office
