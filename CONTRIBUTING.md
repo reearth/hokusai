@@ -155,6 +155,26 @@ fix. The session that landed the
 warm-up RNG, and seed-with-noise commits used this technique
 exclusively.
 
+### Per-step input tracing
+
+`HOKUSAI_TRACE_INPUTS=1` goes one level deeper: both engines print the
+brush *inputs* (pressure, speed1/2, stroke, custom, direction,
+declination, …) at every simulation step — hokusai to stderr, the C
+wrapper via libmypaint's own `print_inputs` hook to stdout (mixed with
+the image; filter with `grep press=`). Because the format mirrors
+`print_inputs`, a paste-diff pinpoints which *input* diverges before it
+ever reaches a dab:
+
+```sh
+HOKUSAI_TRACE_INPUTS=1 cargo run -p hokusai-compat --example debug_dabs     script.json 2> hok.log
+HOKUSAI_TRACE_INPUTS=1 ./tools/libmypaint-render/libmypaint-render     script.json brush.myb | grep -a 'press=' > lmp.log
+paste <(grep press= hok.log) lmp.log | less
+```
+
+For byte-level image comparison there is also
+`cargo run -p hokusai-compat --example render_raw script.json`, which
+writes the same raw RGBA stream `libmypaint-render` emits on stdout.
+
 ## Code style
 
 - **No `unsafe`.** The engine is pure-safe Rust by design.

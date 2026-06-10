@@ -198,7 +198,6 @@ impl Brush {
             return false;
         }
 
-
         // --- Stroke input gating threshold ----------------------------------
         // libmypaint flips `STATE.STROKE_STARTED` based on pressure crossing
         // `stroke_threshold` (and `stroke_threshold * 0.9 + ε` on the way
@@ -246,10 +245,7 @@ impl Brush {
 
         // libmypaint applies `INPUT(PRESSURE) = STATE(PRESSURE) *
         // expf(BASEVAL(PRESSURE_GAIN_LOG))` (mypaint-brush.c:688).
-        let pressure_gain = self
-            .get(BrushSetting::PressureGainLog)
-            .base_value
-            .exp();
+        let pressure_gain = self.get(BrushSetting::PressureGainLog).base_value.exp();
 
         // libmypaint's *base_radius* is `expf(BASEVAL(RADIUS_LOGARITHMIC))` —
         // a brush-level constant unaffected by per-event input curves.
@@ -355,8 +351,15 @@ impl Brush {
         // STATE.ACTUAL_RADIUS / .ACTUAL_ELLIPTICAL_* / .DABS_PER_* — all
         // carried over from the previous event's last simulation step (or
         // zeroed by a reset, triggering the base-value fallbacks).
-        let mut dabs_todo =
-            count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left as f32);
+        let mut dabs_todo = count_dabs_to(
+            self,
+            state,
+            cur_x,
+            cur_y,
+            target_x,
+            target_y,
+            dtime_left as f32,
+        );
         let mut painted = false;
 
         // Simulation-step loop: while a full dab is due, advance + evaluate +
@@ -399,20 +402,16 @@ impl Brush {
             // STATE.DABS_PER_* ← the *previous* evaluation's SETTING values
             // (mypaint-brush.c:628-630) — count_dabs_to sees them one step
             // delayed.
-            state.dabs_per_actual_radius = state
-                .prev_settings
-                .get(BrushSetting::DabsPerActualRadius);
-            state.dabs_per_basic_radius =
-                state.prev_settings.get(BrushSetting::DabsPerBasicRadius);
+            state.dabs_per_actual_radius =
+                state.prev_settings.get(BrushSetting::DabsPerActualRadius);
+            state.dabs_per_basic_radius = state.prev_settings.get(BrushSetting::DabsPerBasicRadius);
             state.dabs_per_second = state.prev_settings.get(BrushSetting::DabsPerSecond);
 
             // Stroke start/end gate — per step, on the interpolated pressure.
             if !state.stroke_started && cur_pressure > stroke_threshold + STROKE_EPS {
                 state.stroke_started = true;
                 state.stroke_state = 0.0;
-            } else if state.stroke_started
-                && cur_pressure <= stroke_threshold * 0.9 + STROKE_EPS
-            {
+            } else if state.stroke_started && cur_pressure <= stroke_threshold * 0.9 + STROKE_EPS {
                 state.stroke_started = false;
             }
 
@@ -789,8 +788,7 @@ impl Brush {
                     // radius_by_random branch a few lines earlier). For
                     // brushes whose noise meaningfully shifts the radius
                     // the smudge sample needs to scale with it.
-                    let smudge_radius =
-                        (draw_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
+                    let smudge_radius = (draw_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
                     // libmypaint's `update_smudge_color` passes
                     // `legacy_smudge ? -1.0 : paint_factor` to
                     // `surface2_get_color`. paint_mode > 0 triggers
@@ -893,8 +891,15 @@ impl Brush {
             // Recount against the freshly advanced state — STATE.ACTUAL_RADIUS
             // (possibly radius_by_random-perturbed), this dab's elliptical
             // aspect/angle, and the one-step-delayed DABS_PER_* values.
-            dabs_todo =
-                count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left as f32);
+            dabs_todo = count_dabs_to(
+                self,
+                state,
+                cur_x,
+                cur_y,
+                target_x,
+                target_y,
+                dtime_left as f32,
+            );
         }
 
         // `dabs_moved` survives the final no-draw step untouched, so the
@@ -1371,7 +1376,10 @@ fn directional_offsets(
 
     const LIM: f32 = 3240.0;
     let base_mul = base_radius * offset_mult;
-    ((dx * base_mul).clamp(-LIM, LIM), (dy * base_mul).clamp(-LIM, LIM))
+    (
+        (dx * base_mul).clamp(-LIM, LIM),
+        (dy * base_mul).clamp(-LIM, LIM),
+    )
 }
 
 /// C `DEGREES(x)` — `((x) / (2*M_PI)) * 360.0` — evaluated in DOUBLE.

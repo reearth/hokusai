@@ -542,7 +542,7 @@ fn paint_blend_into_tile(
 ) -> bool {
     use crate::spectral::{fastpow, rgb_to_spectral, spectral_blend_factor, spectral_to_rgb};
 
-    const ONE: u32 = FIX15_ONE as u32; // 1 << 15
+    const ONE: u32 = FIX15_ONE; // 1 << 15
 
     let alpha_eraser = alpha_eraser.clamp(0.0, 1.0);
     let eraser_variant = alpha_eraser != 1.0;
@@ -592,12 +592,7 @@ fn paint_blend_into_tile(
             let opa_b = ONE - opa_a;
 
             let dst = &mut tile[ly][lx];
-            let (r0, g0, b0, a0) = (
-                dst[0] as u32,
-                dst[1] as u32,
-                dst[2] as u32,
-                dst[3] as u32,
-            );
+            let (r0, g0, b0, a0) = (dst[0] as u32, dst[1] as u32, dst[2] as u32, dst[3] as u32);
 
             if !eraser_variant {
                 // draw_dab_pixels_BlendMode_Normal_Paint
@@ -633,8 +628,7 @@ fn paint_blend_into_tile(
                 let opa_out = opa_a2 + opa_b * a0 / ONE;
 
                 let mut rgb = [0u32; 3];
-                let spectral_factor =
-                    spectral_blend_factor(a0 as f32 / ONE as f32).clamp(0.0, 1.0);
+                let spectral_factor = spectral_blend_factor(a0 as f32 / ONE as f32).clamp(0.0, 1.0);
                 let additive_factor = 1.0 - spectral_factor;
 
                 if additive_factor != 0.0 {
@@ -908,7 +902,9 @@ fn for_each_mask_pixel<F: FnMut(usize, usize, u32)>(
     for yp in y0..=y1 {
         for xp in x0..=x1 {
             let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(xp as f32, yp as f32, xl, yl, 1.0, 1.0, 0.0, inv_r2, r_aa_start)
+                rr_at_aa(
+                    xp as f32, yp as f32, xl, yl, 1.0, 1.0, 0.0, inv_r2, r_aa_start,
+                )
             } else {
                 rr_at(xp as f32, yp as f32, xl, yl, 1.0, 1.0, 0.0, inv_r2)
             };
@@ -934,7 +930,7 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     y: f32,
     radius: f32,
 ) -> RgbaF32 {
-    const ONE: u32 = FIX15_ONE as u32;
+    const ONE: u32 = FIX15_ONE;
     let radius = if radius < 1.0 { 1.0 } else { radius };
     let r_fringe = radius + 1.0;
     let tx0 = ((x - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
@@ -1023,7 +1019,11 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
     let ty0 = ((y - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
     let ty1 = ((y + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
 
-    let sample_interval: u32 = if radius <= 2.0 { 1 } else { (radius * 7.0) as u32 };
+    let sample_interval: u32 = if radius <= 2.0 {
+        1
+    } else {
+        (radius * 7.0) as u32
+    };
     let random_sample_rate = 1.0_f32 / (7.0 * radius);
     let random_sample_threshold = (random_sample_rate * C_RAND_MAX as f32) as i32;
 
@@ -1043,8 +1043,8 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
             // mask entries (zeros are RLE-skipped in the reference).
             let mut interval_counter: u32 = 0;
             for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
-                let sampled =
-                    interval_counter == 0 || (sample_interval > 1 && c_rand() < random_sample_threshold);
+                let sampled = interval_counter == 0
+                    || (sample_interval > 1 && c_rand() < random_sample_threshold);
                 if sampled {
                     let p = tile_opt.map(|t| t[ly][lx]).unwrap_or([0, 0, 0, 0]);
                     let pa = p[3] as u32;

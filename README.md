@@ -71,7 +71,7 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 
 ## libmypaint parity
 
-**137 / 196 stock brushes (≈ 70 %) match libmypaint at MAD ≤ 0.5** under the brush-pack parity harness, with another 41 inside MAD ≤ 5. Measured against libmypaint v1.6.1 + the upstream [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) pack via `cargo xtask brush-pack-report` (see [`CONTRIBUTING.md`](CONTRIBUTING.md#libmypaint-parity-testing) for the setup). Remaining gaps are tracked in [TODO](#todo).
+**184 / 196 stock brushes (≈ 94 %) match libmypaint at MAD ≤ 0.5** under the brush-pack parity harness; the remaining 12 are inside MAD ≤ 4 and none are red. Measured against libmypaint v1.6.1 + the upstream [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) pack via `cargo xtask brush-pack-report` (see [`CONTRIBUTING.md`](CONTRIBUTING.md#libmypaint-parity-testing) for the setup). Remaining gaps are tracked in [TODO](#todo).
 
 ## Features
 
@@ -111,7 +111,8 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 🔬 **Compatibility**
 - Knuth lagged-Fibonacci PRNG port of libmypaint's `rng-double.c` (TAOCP 3.6-15, KK=10 LL=7 TT=7, seed 1000) with the same `rand_gauss` scaling
 - libmypaint-sourced PNG goldens via a small C wrapper around `mypaint_brush_stroke_to_2` (`cargo xtask regenerate-goldens`)
-- Brush-pack parity tool (`cargo xtask brush-pack-report`) — drives all 196 stock brushes through a fixed pressure-ramp curve. Current state: **137 / 196** stock brushes pass MAD ≤ 0.50, 41 amber (≤ 5.0), 18 red
+- Brush-pack parity tool (`cargo xtask brush-pack-report`) — drives all 196 stock brushes through a fixed pressure-ramp curve. Current state: **184 / 196** stock brushes pass MAD ≤ 0.50, 12 amber (≤ 5.0), 0 red
+- Per-step input tracing (`HOKUSAI_TRACE_INPUTS=1`) prints libmypaint's `print_inputs`-format lines from both engines — on the trickiest scatter brushes the streams match line-for-line
 - Per-dab tracing (`HOKUSAI_TRACE_DABS=1`) prints identical-format dab lines from both engines for `paste`-diff debugging
 - `HOKUSAI_UPDATE_GOLDENS=1` snapshot harness for in-tree regression
 
@@ -124,23 +125,23 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 ## TODO
 
 The brush-pack-report (`cargo xtask brush-pack-report`) is the source of truth
-for what's left. As of the latest run, 18 brushes are red (MAD > 5) and 41 are
-amber. The remaining gaps cluster into:
+for what's left. As of the latest run, 0 brushes are red (MAD > 5) and 12 are
+amber (worst: `texture-06` at 3.8). The remaining ambers are residual,
+not structural — dab positions, inputs and colours track the reference and
+the gap is accumulated low-order pixel drift. Known contributors:
 
-- **RNG-divergent scatter brushes** (`Tail_Feathers`, `Tail_Feathers2`,
-  `Flight_Feathers`, `Fan#1`, `imp_details`, `impressionism`, `puantilism2`,
-  `spray`, `spray2`, `particules_eraser`, `DNA_brush`, `Clouds`, `texture-06`,
-  `oil-0{1,3}-paint`, `coarse_bulk_1`). The individual dab formulas match;
-  the dab *sequence* diverges because some upstream RNG consumer is offset
-  by an unknown count. Use `HOKUSAI_TRACE_DABS=1 paste`-diff (see
-  `CONTRIBUTING.md`) — the first drifting column points at the missing
-  consumer.
-- **Surfacemap-input brushes** (`Posterizer`, `Round#1`). libmypaint's
-  v1.6.1 dylib outputs all-white for these because the reference C wrapper
-  rejects them via surfacemap; hokusai actually paints. Either teach the
-  wrapper to accept these brushes, or skip them in the report.
-- **`anti_aliasing > 1.0` and full-dab feathering edge cases** — landed
-  recently but only covered by one fixture; needs sweep across more brushes.
+- **Non-paint pixel blends still run in float** — the Normal / Eraser /
+  LockAlpha / Colorize passes use f32 arithmetic where brushmodes.c uses
+  fix15 integer truncation; the spectral paint pass has already been
+  converted (`paint_blend_into_tile`) and the same treatment should bring
+  most ambers under 0.5.
+- **Cross-libm one-ulp noise** — Rust and the system C library can disagree
+  in the last ulp of `expf`/`powf`/`atan2f`; brushes that amplify inputs
+  through `exp(offset_multiplier)`-scaled offsets (`Tail_Feathers` family)
+  scatter dabs by ~0.01 px when that happens.
+- **Sparse `get_color` sampling parity is macOS/BSD-specific** — radii
+  above 2 px subsample with libc `rand()`, ported as the BSD Park–Miller
+  generator; against a glibc-built libmypaint the sampled subset differs.
 
 ## Contributing
 
