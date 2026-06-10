@@ -1102,7 +1102,12 @@ fn build_dab(
     // clamped to [0, 1] downstream.
     let opaque_raw = sv.get(BrushSetting::Opaque).max(0.0);
     let opaque_mult = opaque_multiplier(brush, sv);
-    let mut opaque = (opaque_raw * opaque_mult * opaque_scale).clamp(0.0, 1.0);
+    // NOTE: `opaque_scale` (radius_by_random's alpha correction) is applied
+    // AFTER opaque_linearize below — libmypaint clamps and linearizes the
+    // bare opaque*multiply product first (mypaint-brush.c:957-987) and only
+    // multiplies the correction in at the radius_by_random branch (:1024).
+    // The linearize curve is non-linear, so the order is visible.
+    let mut opaque = (opaque_raw * opaque_mult).clamp(0.0, 1.0);
 
     // libmypaint's `opaque_linearize` compensates for the fact that
     // overlapping dabs accumulate alpha non-linearly: the per-dab alpha
@@ -1131,6 +1136,9 @@ fn build_dab(
         let beta_dab = beta.powf(1.0 / dabs_per_pixel);
         opaque = (1.0 - beta_dab).clamp(0.0, 1.0);
     }
+    // radius_by_random's `(orig/new)²` density compensation, post-linearize
+    // like upstream.
+    opaque *= opaque_scale;
 
     let mut hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
     let mut radius = radius;
@@ -1200,8 +1208,11 @@ fn build_dab(
         opaque,
         hardness,
         alpha_eraser,
-        aspect_ratio: sv.get(BrushSetting::EllipticalDabRatio).max(1.0),
-        angle: sv.get(BrushSetting::EllipticalDabAngle),
+        // libmypaint draws with the carried STATE values — the angle is
+        // the mod_arith-folded [-180, 0) representative, which matters for
+        // f32 cos/sin rounding even though the ellipse is 180°-symmetric.
+        aspect_ratio: state.actual_elliptical_ratio.max(1.0),
+        angle: state.actual_elliptical_angle,
         lock_alpha: sv.get(BrushSetting::LockAlpha).clamp(0.0, 1.0),
         colorize: sv.get(BrushSetting::Colorize).clamp(0.0, 1.0),
         posterize: sv.get(BrushSetting::Posterize).clamp(0.0, 1.0),

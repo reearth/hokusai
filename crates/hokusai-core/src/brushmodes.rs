@@ -177,7 +177,6 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let angle = ((dab.angle / 360.0 * 2.0) as f64 * std::f64::consts::PI) as f32;
     let cs = angle.cos();
     let sn = angle.sin();
-    let inv_r2 = 1.0 / (radius * radius);
     // libmypaint's render_dab_mask uses per-pixel sub-pixel sampling
     // (calculate_rr_antialiased) for `radius < 3`. Larger dabs fall back
     // to the plain rr formula since aliasing is invisible. Pre-compute
@@ -203,14 +202,9 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
 
     // libmypaint's AABB is `radius + 1` for both axes — the elliptical
     // dab's extent in WORLD coords is bounded by the major axis (radius),
-    // regardless of rotation. hokusai used to use `radius * aspect + 1`
-    // which over-included pixels for elliptical brushes but produced
-    // identical output (the rr > 1 check filters them out).
+    // regardless of rotation (mypaint-tiled-surface.c floors all four
+    // corners).
     let r_ext = radius + 1.0;
-    // libmypaint floors all four corners (mypaint-tiled-surface.c:350-353)
-    // — hokusai used ceil for x1/y1 which picked up one extra row/column
-    // of pixels past where upstream stopped. For the AA path those edge
-    // pixels render with sub-pixel weight, so the difference is real.
     let x0 = (dab.x - r_ext).floor() as i32;
     let y0 = (dab.y - r_ext).floor() as i32;
     let x1 = (dab.x + r_ext).floor() as i32;
@@ -221,527 +215,515 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let tx1 = x1.div_euclid(TILE_SIZE as i32);
     let ty1 = y1.div_euclid(TILE_SIZE as i32);
 
-    // Premultiplied source color in fix15 (premultiplied by opaque * eraser
-    // happens per pixel because the mask varies; only the base color is set
-    // here, in straight-alpha form).
+    // C truncates the straight-alpha colour to fix15 once, up front
+    // (`op->color_r = color_r * (1<<15)`).
     let src = clamp_color(dab.color);
     let src_r = (src.r * FIX15_ONE as f32) as u32;
     let src_g = (src.g * FIX15_ONE as f32) as u32;
     let src_b = (src.b * FIX15_ONE as f32) as u32;
-    let alpha_eraser_f = dab.alpha_eraser.clamp(0.0, 1.0);
+    let color_a = dab.alpha_eraser.clamp(0.0, 1.0);
     let opaque_f = dab.opaque.clamp(0.0, 1.0);
     let hardness = dab.hardness.clamp(0.0, 1.0);
+    let lock_alpha = dab.lock_alpha.clamp(0.0, 1.0);
+    let colorize = dab.colorize.clamp(0.0, 1.0);
+    let posterize = dab.posterize.clamp(0.0, 1.0);
+    let posterize_num = dab.posterize_num.clamp(1.0, 128.0) as u32;
+    let paint = dab.paint.clamp(0.0, 1.0);
+    // process_op: `op->normal = (1-lock_alpha)(1-colorize)(1-posterize)`.
+    let normal_f = (1.0 - lock_alpha) * (1.0 - colorize) * (1.0 - posterize);
 
+    // C passes each blend's opacity as `float-product * (1<<15)` into a
+    // uint16_t parameter — truncation happens exactly once, here.
+    let fix = |v: f32| -> u32 { (v * FIX15_ONE as f32) as u32 };
+
+    let mut mask_entries: Vec<(usize, usize, u32)> = Vec::new();
     let mut painted = false;
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            // Tile origin in world space.
-            let ox = tx * TILE_SIZE as i32;
-            let oy = ty * TILE_SIZE as i32;
-
-            // Intersection of dab bbox with this tile, in tile-local coords.
-            let lx0 = (x0 - ox).max(0) as usize;
-            let ly0 = (y0 - oy).max(0) as usize;
-            let lx1 = (x1 - ox).min(TILE_SIZE as i32 - 1) as usize;
-            let ly1 = (y1 - oy).min(TILE_SIZE as i32 - 1) as usize;
-            if lx0 > lx1 || ly0 > ly1 {
+            // render_dab_mask works in tile-local coordinates and computes
+            // the bbox from the local centre.
+            let xl = dab.x - (tx * TILE_SIZE as i32) as f32;
+            let yl = dab.y - (ty * TILE_SIZE as i32) as f32;
+            collect_dab_mask(
+                &mut mask_entries,
+                xl,
+                yl,
+                radius,
+                hardness,
+                aspect,
+                cs,
+                sn,
+                r_aa_start,
+            );
+            if mask_entries.is_empty() {
                 continue;
             }
 
             let tile = surface.tile_request_start(tx, ty);
-            let paint_mode = dab.paint.clamp(0.0, 1.0);
-            // Pass 1: regular Normal+Eraser blend, with opacity scaled
-            // down by the paint factor. libmypaint draws both passes
-            // back-to-back with `(1 - paint) * opaque` and `paint *
-            // opaque` respectively, then sums them via the buffer.
-            let touched = paint_into_tile(
-                tile,
-                ox,
-                oy,
-                lx0,
-                ly0,
-                lx1,
-                ly1,
-                dab.x,
-                dab.y,
-                aspect,
-                cs,
-                sn,
-                inv_r2,
-                hardness,
-                opaque_f * (1.0 - paint_mode),
-                alpha_eraser_f,
-                r_aa_start,
-                dab.lock_alpha.clamp(0.0, 1.0),
-                dab.posterize.clamp(0.0, 1.0),
-                dab.posterize_num.max(1.0),
-                dab.colorize.clamp(0.0, 1.0),
-                src,
-                src_r,
-                src_g,
-                src_b,
-            );
-            // Pass 2: spectral pigment blend on top of the Normal pass.
-            // libmypaint scales the paint blend's opacity by `op->normal =
-            // (1-lock_alpha)(1-colorize)(1-posterize)` (process_op) and
-            // skips it entirely when that factor is 0.
-            let normal_f = (1.0 - dab.lock_alpha.clamp(0.0, 1.0))
-                * (1.0 - dab.colorize.clamp(0.0, 1.0))
-                * (1.0 - dab.posterize.clamp(0.0, 1.0));
-            let touched_paint = if paint_mode > 0.0 && normal_f > 0.0 {
-                paint_blend_into_tile(
+            // The pass structure and opacity compositions mirror
+            // process_op (mypaint-tiled-surface.c) exactly.
+            if paint < 1.0 {
+                if normal_f != 0.0 {
+                    let opacity = fix(normal_f * opaque_f * (1.0 - paint));
+                    if color_a == 1.0 {
+                        blend_normal(tile, &mask_entries, src_r, src_g, src_b, opacity);
+                    } else {
+                        blend_normal_and_eraser(
+                            tile,
+                            &mask_entries,
+                            src_r,
+                            src_g,
+                            src_b,
+                            fix(color_a),
+                            opacity,
+                        );
+                    }
+                }
+                if lock_alpha != 0.0 && color_a != 0.0 {
+                    let opacity = fix(
+                        lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize)
+                            * (1.0 - paint),
+                    );
+                    blend_lock_alpha(tile, &mask_entries, src_r, src_g, src_b, opacity);
+                }
+            }
+            if paint > 0.0 {
+                if normal_f != 0.0 {
+                    let opacity = fix(normal_f * opaque_f * paint);
+                    if color_a == 1.0 {
+                        blend_normal_paint(tile, &mask_entries, src_r, src_g, src_b, opacity);
+                    } else {
+                        blend_normal_and_eraser_paint(
+                            tile,
+                            &mask_entries,
+                            src_r,
+                            src_g,
+                            src_b,
+                            fix(color_a),
+                            opacity,
+                        );
+                    }
+                }
+                if lock_alpha != 0.0 && color_a != 0.0 {
+                    let opacity = fix(
+                        lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize) * paint,
+                    );
+                    blend_lock_alpha_paint(tile, &mask_entries, src_r, src_g, src_b, opacity);
+                }
+            }
+            if colorize != 0.0 {
+                blend_color(
                     tile,
-                    ox,
-                    oy,
-                    lx0,
-                    ly0,
-                    lx1,
-                    ly1,
-                    dab.x,
-                    dab.y,
-                    aspect,
-                    cs,
-                    sn,
-                    inv_r2,
-                    hardness,
-                    normal_f * opaque_f * paint_mode,
-                    alpha_eraser_f,
-                    r_aa_start,
-                    src,
-                )
-            } else {
-                false
-            };
-            // Pass 3: posterize. libmypaint runs this as a fourth blend
-            // mode AFTER normal+paint (and colorize), operating on the
-            // already-blended canvas. Pass 1's per-pixel loop short-
-            // circuits when its scaled opacity is zero (e.g. paint_mode=1
-            // brushes), so posterize would otherwise never run on those.
-            let touched_post = if dab.posterize > 0.0 {
-                posterize_pass_into_tile(
+                    &mask_entries,
+                    src_r,
+                    src_g,
+                    src_b,
+                    fix(colorize * opaque_f),
+                );
+            }
+            if posterize != 0.0 {
+                blend_posterize(
                     tile,
-                    ox,
-                    oy,
-                    lx0,
-                    ly0,
-                    lx1,
-                    ly1,
-                    dab.x,
-                    dab.y,
-                    aspect,
-                    cs,
-                    sn,
-                    inv_r2,
-                    hardness,
-                    opaque_f,
-                    r_aa_start,
-                    dab.posterize.clamp(0.0, 1.0),
-                    dab.posterize_num.max(1.0),
-                )
-            } else {
-                false
-            };
+                    &mask_entries,
+                    fix(posterize * opaque_f),
+                    posterize_num,
+                );
+            }
             surface.tile_request_end(tx, ty);
-            painted |= touched | touched_paint | touched_post;
-        }
-    }
-    painted
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_into_tile(
-    tile: &mut TilePixels,
-    ox: i32,
-    oy: i32,
-    lx0: usize,
-    ly0: usize,
-    lx1: usize,
-    ly1: usize,
-    cx: f32,
-    cy: f32,
-    aspect: f32,
-    cs: f32,
-    sn: f32,
-    inv_r2: f32,
-    hardness: f32,
-    opaque: f32,
-    alpha_eraser: f32,
-    r_aa_start: f32,
-    lock_alpha: f32,
-    posterize: f32,
-    posterize_num: f32,
-    colorize: f32,
-    src_color: RgbaF32,
-    src_r: u32,
-    src_g: u32,
-    src_b: u32,
-) -> bool {
-    let mut painted = false;
-    let _ = (posterize, posterize_num); // handled by posterize_pass_into_tile.
-
-    for ly in ly0..=ly1 {
-        let py = (oy + ly as i32) as f32;
-        for lx in lx0..=lx1 {
-            let px = (ox + lx as i32) as f32;
-            // libmypaint picks sub-pixel AA for dabs whose radius is
-            // below 3 px; for larger dabs the plain rr formula doesn't
-            // alias visibly.
-            let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
-            } else {
-                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
-            };
-            if rr > 1.0 {
-                continue;
-            }
-            let mut opa = opa_at(rr, hardness);
-            opa *= opaque;
-            if opa <= 0.0 {
-                continue;
-            }
-
-            // fix15 mask values.
-            let mask = (opa.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-            let opa_alpha_raw = fix15::mul(mask, (alpha_eraser * FIX15_ONE as f32) as u32);
-            let inv_mask = FIX15_ONE - mask;
-
-            let dst = &mut tile[ly][lx];
-            let dr = dst[0] as u32;
-            let dg = dst[1] as u32;
-            let db = dst[2] as u32;
-            let da = dst[3] as u32;
-
-            // Lock alpha: when set, the dab is masked by the existing alpha
-            // (so only previously-painted areas get coloured) and dst.a is
-            // unchanged. Blend smoothly via `lock_alpha`.
-            let (color_opa_alpha, write_alpha) = if lock_alpha > 0.0 {
-                let locked = fix15::mul(opa_alpha_raw, da);
-                let blended = lerp_fix15(opa_alpha_raw, locked, lock_alpha);
-                (blended, lock_alpha < 1.0)
-            } else {
-                (opa_alpha_raw, true)
-            };
-
-            // Colorize: replace dst's hue and saturation (HSV) with the dab's,
-            // preserving dst's value. When colorize=0 the regular Normal blend
-            // applies. Done in straight alpha → convert, replace, repremul.
-            if colorize > 0.0 && da > 0 {
-                colorize_pixel(dst, src_color, mask, colorize);
-                painted = true;
-                continue;
-            }
-
-            dst[0] = blend(dr, inv_mask, src_r, color_opa_alpha);
-            dst[1] = blend(dg, inv_mask, src_g, color_opa_alpha);
-            dst[2] = blend(db, inv_mask, src_b, color_opa_alpha);
-            if write_alpha {
-                dst[3] = blend(da, inv_mask, FIX15_ONE, opa_alpha_raw);
-            }
-
-            // (Posterize is its own pass now — see `posterize_pass_into_tile`
-            // called from `draw_dab_default` after the paint pass.)
             painted = true;
         }
     }
     painted
 }
 
-/// Linear interpolation in fix15 space: `a*(1-t) + b*t`.
-#[inline]
-fn lerp_fix15(a: u32, b: u32, t: f32) -> u32 {
-    let t_fix = (t.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-    fix15::mul(a, FIX15_ONE - t_fix) + fix15::mul(b, t_fix)
-}
-
-/// Colorize: replace the pixel's hue+saturation with `src_color`'s, blended
-/// by `mask` (dab coverage) and `amount` (colorize strength). dst.a stays.
-fn colorize_pixel(pixel: &mut [u16; 4], src_color: RgbaF32, mask: u32, amount: f32) {
-    let a = pixel[3] as f32 / FIX15_ONE as f32;
-    if a <= 0.0 {
-        return;
-    }
-    let dr = (pixel[0] as f32 / FIX15_ONE as f32) / a;
-    let dg = (pixel[1] as f32 / FIX15_ONE as f32) / a;
-    let db = (pixel[2] as f32 / FIX15_ONE as f32) / a;
-    let dst_hsv = crate::color::rgb_to_hsv(dr, dg, db);
-    let src_hsv = crate::color::rgb_to_hsv(src_color.r, src_color.g, src_color.b);
-    // Keep dst.v, take src.h + src.s by `amount`.
-    let mixed = crate::color::hsv_to_rgb(crate::color::Hsv {
-        h: src_hsv.h,
-        s: dst_hsv.s + (src_hsv.s - dst_hsv.s) * amount,
-        v: dst_hsv.v,
-    });
-    let mask_f = mask as f32 / FIX15_ONE as f32;
-    let nr = (dr + (mixed.r - dr) * mask_f * amount) * a;
-    let ng = (dg + (mixed.g - dg) * mask_f * amount) * a;
-    let nb = (db + (mixed.b - db) * mask_f * amount) * a;
-    pixel[0] = (nr.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
-    pixel[1] = (ng.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
-    pixel[2] = (nb.clamp(0.0, 1.0) * FIX15_ONE as f32) as u16;
-}
-
-/// Posterize `pixel` toward `pnum` quantization levels by `amount` (fix15).
-/// Matches libmypaint's `draw_dab_pixels_BlendMode_Posterize`: works on
-/// the premultiplied channel values directly (no un-premul / re-premul
-/// round-trip), so it leaves the alpha channel alone.
-fn posterize_pixel(pixel: &mut [u16; 4], pnum: f32, amount: u32) {
-    if amount == 0 {
-        return;
-    }
-    let inv_amount = FIX15_ONE - amount;
-    for ch in 0..3 {
-        let c_premul = pixel[ch] as f32 / FIX15_ONE as f32;
-        // libmypaint quantises the premultiplied value directly.
-        let post = (c_premul * pnum).round() / pnum;
-        let post_fix15 = (post.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-        let dst = pixel[ch] as u32;
-        let blended = (amount * post_fix15 + inv_amount * dst) >> 15;
-        pixel[ch] = blended.min(FIX15_ONE) as u16;
-    }
-}
-
-/// Spectral pigment blend over an already-blended Normal pass, mirroring
-/// libmypaint's spectral paint pass. Upstream dispatches on `color_a`
-/// (process_op, mypaint-tiled-surface.c):
-///
-/// - `color_a == 1.0` → `draw_dab_pixels_BlendMode_Normal_Paint`: a full
-///   weighted-geometric-mean spectral mix with a minimum opacity of
-///   150/32768 (low opacity hits int round-trip noise), additive only on
-///   alpha-0 pixels.
-/// - `color_a != 1.0` → `draw_dab_pixels_BlendMode_Normal_and_Eraser_Paint`:
-///   the erase-aware variant that fades from additive to spectral with
-///   `spectral_blend_factor(canvas alpha)` and has NO minimum opacity.
-///
-/// hokusai used to run the eraser variant unconditionally (with the other
-/// variant's minimum-opacity clamp), which rendered every non-smudging
-/// `paint_mode` brush far too light — the additive fade dominates on a
-/// mostly-transparent canvas.
-///
-/// Arithmetic is done in fix15 integers exactly like brushmodes.c so the
-/// truncation/rounding points line up.
+/// Build the per-tile dab mask exactly like `render_dab_mask`: bbox from
+/// `floor(local centre ± (radius+1))` clamped to the tile, sub-pixel AA
+/// for radius < 3, and fix15 quantisation (`opa * (1<<15)` truncated) with
+/// zero entries dropped.
 #[allow(clippy::too_many_arguments)]
-fn paint_blend_into_tile(
-    tile: &mut TilePixels,
-    ox: i32,
-    oy: i32,
-    lx0: usize,
-    ly0: usize,
-    lx1: usize,
-    ly1: usize,
-    cx: f32,
-    cy: f32,
+fn collect_dab_mask(
+    entries: &mut Vec<(usize, usize, u32)>,
+    xl: f32,
+    yl: f32,
+    radius: f32,
+    hardness: f32,
     aspect: f32,
     cs: f32,
     sn: f32,
-    inv_r2: f32,
-    hardness: f32,
-    opaque: f32,
-    alpha_eraser: f32,
     r_aa_start: f32,
-    src_color: RgbaF32,
-) -> bool {
-    use crate::spectral::{fastpow, rgb_to_spectral, spectral_blend_factor, spectral_to_rgb};
-
-    const ONE: u32 = FIX15_ONE; // 1 << 15
-
-    let alpha_eraser = alpha_eraser.clamp(0.0, 1.0);
-    let eraser_variant = alpha_eraser != 1.0;
-    // C: the blend functions take `uint16_t opacity` ← float truncation.
-    let mut opacity = (opaque.clamp(0.0, 1.0) * ONE as f32) as u32;
-    if !eraser_variant {
-        // Normal_Paint only: "pigment-mode does not like very low opacity".
-        opacity = opacity.max(150);
+) {
+    entries.clear();
+    let r_fringe = radius + 1.0;
+    let x0 = ((xl - r_fringe).floor() as i32).max(0);
+    let y0 = ((yl - r_fringe).floor() as i32).max(0);
+    let x1 = ((xl + r_fringe).floor() as i32).min(TILE_SIZE as i32 - 1);
+    let y1 = ((yl + r_fringe).floor() as i32).min(TILE_SIZE as i32 - 1);
+    if x0 > x1 || y0 > y1 {
+        return;
     }
-    if opacity == 0 && !eraser_variant {
-        // unreachable (max(150)), kept for shape parity
+    let inv_r2 = 1.0 / (radius * radius);
+    for yp in y0..=y1 {
+        for xp in x0..=x1 {
+            let rr = if r_aa_start >= 0.0 {
+                rr_at_aa(xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2, r_aa_start)
+            } else {
+                rr_at(xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2)
+            };
+            let opa = if rr > 1.0 { 0.0 } else { opa_at(rr, hardness) };
+            let mask = (opa * FIX15_ONE as f32) as u32;
+            if mask != 0 {
+                entries.push((xp as usize, yp as usize, mask));
+            }
+        }
     }
-    // C: `op->color_a = color_a` (float), passed as `color_a * (1<<15)`
-    // into a uint16_t parameter — truncation.
-    let color_a_fix = (alpha_eraser * ONE as f32) as u32;
-    let src = clamp_color(src_color);
-    let src_r = (src.r * ONE as f32) as u32;
-    let src_g = (src.g * ONE as f32) as u32;
-    let src_b = (src.b * ONE as f32) as u32;
-    // C converts the fix15 color back to float for the spectral upsample.
+}
+
+/// `draw_dab_pixels_BlendMode_Normal` — premultiplied source-over in fix15
+/// integers, libmypaint's exact truncation points.
+fn blend_normal(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    opacity: u32,
+) {
+    const ONE: u32 = FIX15_ONE;
+    for &(lx, ly, mask) in entries {
+        let opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        let p = &mut tile[ly][lx];
+        p[3] = (opa_a + opa_b * p[3] as u32 / ONE) as u16;
+        p[0] = ((opa_a * src_r + opa_b * p[0] as u32) / ONE) as u16;
+        p[1] = ((opa_a * src_g + opa_b * p[1] as u32) / ONE) as u16;
+        p[2] = ((opa_a * src_b + opa_b * p[2] as u32) / ONE) as u16;
+    }
+}
+
+/// `draw_dab_pixels_BlendMode_Normal_and_Eraser` — the erase-aware variant
+/// (smudging dabs): the source contribution scales with `color_a` while the
+/// destination keeps the un-scaled coverage, so `color_a < 1` erases.
+fn blend_normal_and_eraser(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    color_a: u32,
+    opacity: u32,
+) {
+    const ONE: u32 = FIX15_ONE;
+    for &(lx, ly, mask) in entries {
+        let mut opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        opa_a = opa_a * color_a / ONE;
+        let p = &mut tile[ly][lx];
+        p[3] = (opa_a + opa_b * p[3] as u32 / ONE) as u16;
+        p[0] = ((opa_a * src_r + opa_b * p[0] as u32) / ONE) as u16;
+        p[1] = ((opa_a * src_g + opa_b * p[1] as u32) / ONE) as u16;
+        p[2] = ((opa_a * src_b + opa_b * p[2] as u32) / ONE) as u16;
+    }
+}
+
+/// `draw_dab_pixels_BlendMode_LockAlpha` — colour-only blend masked by the
+/// destination alpha; dst alpha is left untouched.
+fn blend_lock_alpha(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    opacity: u32,
+) {
+    const ONE: u32 = FIX15_ONE;
+    for &(lx, ly, mask) in entries {
+        let mut opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        let p = &mut tile[ly][lx];
+        opa_a *= p[3] as u32;
+        opa_a /= ONE;
+        p[0] = ((opa_a * src_r + opa_b * p[0] as u32) / ONE) as u16;
+        p[1] = ((opa_a * src_g + opa_b * p[1] as u32) / ONE) as u16;
+        p[2] = ((opa_a * src_b + opa_b * p[2] as u32) / ONE) as u16;
+    }
+}
+
+/// `draw_dab_pixels_BlendMode_LockAlpha_Paint` — the spectral flavour of
+/// lock-alpha (min opacity 150 like Normal_Paint).
+fn blend_lock_alpha_paint(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    opacity: u32,
+) {
+    use crate::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};
+    const ONE: u32 = FIX15_ONE;
+    let opacity = opacity.max(150);
     let spec_a = rgb_to_spectral(
         src_r as f32 / ONE as f32,
         src_g as f32 / ONE as f32,
         src_b as f32 / ONE as f32,
     );
-
-    let mut painted = false;
-    for ly in ly0..=ly1 {
-        let py = (oy + ly as i32) as f32;
-        for lx in lx0..=lx1 {
-            let px = (ox + lx as i32) as f32;
-            let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
-            } else {
-                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
-            };
-            if rr > 1.0 {
-                continue;
-            }
-            // render_dab_mask quantises the mask to fix15 and skips zeros.
-            let mask = (opa_at(rr, hardness) * ONE as f32) as u32;
-            if mask == 0 {
-                continue;
-            }
-
-            let opa_a = mask * opacity / ONE;
-            let opa_b = ONE - opa_a;
-
-            let dst = &mut tile[ly][lx];
-            let (r0, g0, b0, a0) = (dst[0] as u32, dst[1] as u32, dst[2] as u32, dst[3] as u32);
-
-            if !eraser_variant {
-                // draw_dab_pixels_BlendMode_Normal_Paint
-                let a_out = opa_a + opa_b * a0 / ONE;
-                if a0 == 0 {
-                    // nothing to mix with — plain additive
-                    dst[0] = ((opa_a * src_r + opa_b * r0) / ONE) as u16;
-                    dst[1] = ((opa_a * src_g + opa_b * g0) / ONE) as u16;
-                    dst[2] = ((opa_a * src_b + opa_b * b0) / ONE) as u16;
-                    dst[3] = a_out as u16;
-                } else {
-                    let fac_a = opa_a as f32 / (opa_a + opa_b * a0 / ONE) as f32;
-                    let fac_b = 1.0 - fac_a;
-                    let spec_b = rgb_to_spectral(
-                        r0 as f32 / a0 as f32,
-                        g0 as f32 / a0 as f32,
-                        b0 as f32 / a0 as f32,
-                    );
-                    let mut mix = [0.0_f32; 10];
-                    for i in 0..10 {
-                        mix[i] = fastpow(spec_a[i], fac_a) * fastpow(spec_b[i], fac_b);
-                    }
-                    let (sr, sg, sb) = spectral_to_rgb(&mix);
-                    dst[3] = a_out as u16;
-                    // C: `rgba[i] = (rgb_result[i] * rgba[3]) + 0.5;`
-                    dst[0] = (sr * a_out as f32 + 0.5) as u16;
-                    dst[1] = (sg * a_out as f32 + 0.5) as u16;
-                    dst[2] = (sb * a_out as f32 + 0.5) as u16;
-                }
-            } else {
-                // draw_dab_pixels_BlendMode_Normal_and_Eraser_Paint
-                let opa_a2 = opa_a * color_a_fix / ONE;
-                let opa_out = opa_a2 + opa_b * a0 / ONE;
-
-                let mut rgb = [0u32; 3];
-                let spectral_factor = spectral_blend_factor(a0 as f32 / ONE as f32).clamp(0.0, 1.0);
-                let additive_factor = 1.0 - spectral_factor;
-
-                if additive_factor != 0.0 {
-                    rgb[0] = (opa_a2 * src_r + opa_b * r0) / ONE;
-                    rgb[1] = (opa_a2 * src_g + opa_b * g0) / ONE;
-                    rgb[2] = (opa_a2 * src_b + opa_b * b0) / ONE;
-                }
-
-                if spectral_factor != 0.0 && a0 != 0 {
-                    let spec_b = rgb_to_spectral(
-                        r0 as f32 / a0 as f32,
-                        g0 as f32 / a0 as f32,
-                        b0 as f32 / a0 as f32,
-                    );
-                    let mut fac_a = opa_a as f32 / (opa_a + opa_b * a0 / ONE) as f32;
-                    fac_a *= color_a_fix as f32 / ONE as f32;
-                    let fac_b = 1.0 - fac_a;
-                    let mut mix = [0.0_f32; 10];
-                    for i in 0..10 {
-                        mix[i] = fastpow(spec_a[i], fac_a) * fastpow(spec_b[i], fac_b);
-                    }
-                    let (sr, sg, sb) = spectral_to_rgb(&mix);
-                    let res = [sr, sg, sb];
-                    for i in 0..3 {
-                        // C: `rgb[i] = (additive_factor * rgb[i]) +
-                        //              (spectral_factor * rgb_result[i] * opa_out);`
-                        // (uint32 ← float, truncation)
-                        rgb[i] = (additive_factor * rgb[i] as f32
-                            + spectral_factor * res[i] * opa_out as f32)
-                            as u32;
-                    }
-                }
-
-                dst[3] = opa_out as u16;
-                dst[0] = rgb[0] as u16;
-                dst[1] = rgb[1] as u16;
-                dst[2] = rgb[2] as u16;
-            }
-            painted = true;
+    for &(lx, ly, mask) in entries {
+        let mut opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        let p = &mut tile[ly][lx];
+        opa_a *= p[3] as u32;
+        opa_a /= ONE;
+        let (r0, g0, b0, a0) = (p[0] as u32, p[1] as u32, p[2] as u32, p[3] as u32);
+        if a0 == 0 {
+            p[0] = ((opa_a * src_r + opa_b * r0) / ONE) as u16;
+            p[1] = ((opa_a * src_g + opa_b * g0) / ONE) as u16;
+            p[2] = ((opa_a * src_b + opa_b * b0) / ONE) as u16;
+            continue;
         }
+        let fac_a = opa_a as f32 / (opa_a + opa_b * a0 / ONE) as f32;
+        let fac_b = 1.0 - fac_a;
+        let spec_b = rgb_to_spectral(
+            r0 as f32 / a0 as f32,
+            g0 as f32 / a0 as f32,
+            b0 as f32 / a0 as f32,
+        );
+        let mut mix = [0.0_f32; 10];
+        for i in 0..10 {
+            mix[i] = fastpow(spec_a[i], fac_a) * fastpow(spec_b[i], fac_b);
+        }
+        let (sr, sg, sb) = spectral_to_rgb(&mix);
+        let a_out = opa_a + opa_b * a0 / ONE;
+        p[3] = a_out as u16;
+        p[0] = (sr * a_out as f32 + 0.5) as u16;
+        p[1] = (sg * a_out as f32 + 0.5) as u16;
+        p[2] = (sb * a_out as f32 + 0.5) as u16;
     }
-    painted
 }
 
-/// Posterize as a standalone pass over the dab's footprint. Mirrors
-/// libmypaint's `draw_dab_pixels_BlendMode_Posterize`, which runs after
-/// the normal + paint + colorize passes (and is gated only on
-/// `dab.posterize > 0`, not on the normal pass's scaled opacity).
-#[allow(clippy::too_many_arguments)]
-fn posterize_pass_into_tile(
+/// `draw_dab_pixels_BlendMode_Color` — Adobe "Color" non-separable blend:
+/// transfer the destination's BT.601 luminance onto the source hue/chroma,
+/// in the same scaled-int arithmetic (LUMA coefficients are floats, the
+/// clip steps are integer divisions).
+fn blend_color(
     tile: &mut TilePixels,
-    ox: i32,
-    oy: i32,
-    lx0: usize,
-    ly0: usize,
-    lx1: usize,
-    ly1: usize,
-    cx: f32,
-    cy: f32,
-    aspect: f32,
-    cs: f32,
-    sn: f32,
-    inv_r2: f32,
-    hardness: f32,
-    opaque: f32,
-    r_aa_start: f32,
-    posterize: f32,
-    posterize_num: f32,
-) -> bool {
-    let mut painted = false;
-    let pnum = posterize_num.round().max(1.0);
-    let post_amount_fix15 = (posterize.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-    for ly in ly0..=ly1 {
-        let py = (oy + ly as i32) as f32;
-        for lx in lx0..=lx1 {
-            let px = (ox + lx as i32) as f32;
-            let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(px, py, cx, cy, aspect, cs, sn, inv_r2, r_aa_start)
-            } else {
-                rr_at(px, py, cx, cy, aspect, cs, sn, inv_r2)
-            };
-            if rr > 1.0 {
-                continue;
-            }
-            let mut opa = if rr <= 1.0 { opa_at(rr, hardness) } else { 0.0 };
-            opa *= opaque;
-            if opa <= 0.0 {
-                continue;
-            }
-            // libmypaint multiplies `posterize` by the dab mask. We
-            // scale `post_amount_fix15` by the per-pixel `opa` so the
-            // quantisation strength fades with the dab edge, matching
-            // `draw_dab_pixels_BlendMode_Posterize(... opacity * (1<<15) ...)`.
-            let mask = (opa.clamp(0.0, 1.0) * FIX15_ONE as f32) as u32;
-            let scaled = ((post_amount_fix15 as u64 * mask as u64) >> 15) as u32;
-            posterize_pixel(&mut tile[ly][lx], pnum, scaled);
-            painted = true;
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    opacity: u32,
+) {
+    const ONE: u32 = FIX15_ONE;
+    for &(lx, ly, mask) in entries {
+        let p = &mut tile[ly][lx];
+        let a = p[3] as u32;
+        // De-premult (C leaves r=g=b=0 when alpha is 0).
+        let (mut r, mut g, mut b) = (0u16, 0u16, 0u16);
+        if a != 0 {
+            r = (ONE * p[0] as u32 / a) as u16;
+            g = (ONE * p[1] as u32 / a) as u16;
+            b = (ONE * p[2] as u32 / a) as u16;
         }
+        set_rgb16_lum_from_rgb16(src_r as u16, src_g as u16, src_b as u16, &mut r, &mut g, &mut b);
+        // Re-premult.
+        let r = r as u32 * a / ONE;
+        let g = g as u32 * a / ONE;
+        let b = b as u32 * a / ONE;
+        let opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        p[0] = ((opa_a * r + opa_b * p[0] as u32) / ONE) as u16;
+        p[1] = ((opa_a * g + opa_b * p[1] as u32) / ONE) as u16;
+        p[2] = ((opa_a * b + opa_b * p[2] as u32) / ONE) as u16;
     }
-    painted
 }
 
-/// `(dst * inv_mask + src_premul_channel * opa_alpha) >> 15` with libmypaint's
-/// half-step rounding, clamped to u16 (FIX15_ONE).
+/// BT.601 luminance of a fix15 triple, as the C `LUMA` macro: float
+/// coefficients pre-scaled by 2^15, so the product needs a /2^15 after.
 #[inline]
-fn blend(dst: u32, inv_mask: u32, src_channel: u32, opa_alpha: u32) -> u16 {
-    let s_contrib = fix15::mul(src_channel, opa_alpha);
-    let d_contrib = fix15::mul(dst, inv_mask);
-    let sum = s_contrib + d_contrib;
-    if sum > FIX15_ONE {
-        FIX15_ONE as u16
-    } else {
-        sum as u16
+fn luma(r: f32, g: f32, b: f32) -> f32 {
+    const LUMA_RED_COEFF: f32 = 0.2126 * (1 << 15) as f32;
+    const LUMA_GREEN_COEFF: f32 = 0.7152 * (1 << 15) as f32;
+    const LUMA_BLUE_COEFF: f32 = 0.0722 * (1 << 15) as f32;
+    r * LUMA_RED_COEFF + g * LUMA_GREEN_COEFF + b * LUMA_BLUE_COEFF
+}
+
+/// Port of brushmodes.c `set_rgb16_lum_from_rgb16` (Adobe SetLum +
+/// ClipColor in scaled ints).
+fn set_rgb16_lum_from_rgb16(
+    topr: u16,
+    topg: u16,
+    topb: u16,
+    botr: &mut u16,
+    botg: &mut u16,
+    botb: &mut u16,
+) {
+    const ONE: i32 = FIX15_ONE as i32;
+    let botlum = (luma(*botr as f32, *botg as f32, *botb as f32) / ONE as f32) as u16;
+    let toplum = (luma(topr as f32, topg as f32, topb as f32) / ONE as f32) as u16;
+    let diff = botlum as i32 - toplum as i32;
+    let mut r = topr as i32 + diff;
+    let mut g = topg as i32 + diff;
+    let mut b = topb as i32 + diff;
+
+    let lum = (luma(r as f32, g as f32, b as f32) / ONE as f32) as i32;
+    let cmin = r.min(g).min(b);
+    let cmax = r.max(g).max(b);
+    if cmin < 0 {
+        r = lum + ((r - lum) * lum) / (lum - cmin);
+        g = lum + ((g - lum) * lum) / (lum - cmin);
+        b = lum + ((b - lum) * lum) / (lum - cmin);
+    }
+    if cmax > ONE {
+        r = lum + ((r - lum) * (ONE - lum)) / (cmax - lum);
+        g = lum + ((g - lum) * (ONE - lum)) / (cmax - lum);
+        b = lum + ((b - lum) * (ONE - lum)) / (cmax - lum);
+    }
+    *botr = r as u16;
+    *botg = g as u16;
+    *botb = b as u16;
+}
+
+/// `draw_dab_pixels_BlendMode_Posterize` — quantise the (premultiplied)
+/// canvas under the dab toward `posterize_num` levels.
+fn blend_posterize(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    opacity: u32,
+    posterize_num: u32,
+) {
+    const ONE: u32 = FIX15_ONE;
+    for &(lx, ly, mask) in entries {
+        let p = &mut tile[ly][lx];
+        let r = p[0] as f32 / ONE as f32;
+        let g = p[1] as f32 / ONE as f32;
+        let b = p[2] as f32 / ONE as f32;
+        // C: `(1<<15) * ROUND(r * posterize_num) / posterize_num` with
+        // ROUND(x) = floor(x + 0.5) and integer division.
+        let post_r = ONE * ((r * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
+        let post_g = ONE * ((g * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
+        let post_b = ONE * ((b * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
+        let opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        p[0] = ((opa_a * post_r + opa_b * p[0] as u32) / ONE) as u16;
+        p[1] = ((opa_a * post_g + opa_b * p[1] as u32) / ONE) as u16;
+        p[2] = ((opa_a * post_b + opa_b * p[2] as u32) / ONE) as u16;
+    }
+}
+
+/// `draw_dab_pixels_BlendMode_Normal_Paint` — full WGM spectral
+/// source-over for non-smudging paint dabs (min opacity 150/2^15).
+fn blend_normal_paint(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    opacity: u32,
+) {
+    use crate::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};
+    const ONE: u32 = FIX15_ONE;
+    // "pigment-mode does not like very low opacity" — brushmodes.c:87.
+    let opacity = opacity.max(150);
+    let spec_a = rgb_to_spectral(
+        src_r as f32 / ONE as f32,
+        src_g as f32 / ONE as f32,
+        src_b as f32 / ONE as f32,
+    );
+    for &(lx, ly, mask) in entries {
+        let opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        let p = &mut tile[ly][lx];
+        let (r0, g0, b0, a0) = (p[0] as u32, p[1] as u32, p[2] as u32, p[3] as u32);
+        let a_out = opa_a + opa_b * a0 / ONE;
+        if a0 == 0 {
+            // Nothing to mix with — plain additive.
+            p[3] = a_out as u16;
+            p[0] = ((opa_a * src_r + opa_b * r0) / ONE) as u16;
+            p[1] = ((opa_a * src_g + opa_b * g0) / ONE) as u16;
+            p[2] = ((opa_a * src_b + opa_b * b0) / ONE) as u16;
+            continue;
+        }
+        let fac_a = opa_a as f32 / (opa_a + opa_b * a0 / ONE) as f32;
+        let fac_b = 1.0 - fac_a;
+        let spec_b = rgb_to_spectral(
+            r0 as f32 / a0 as f32,
+            g0 as f32 / a0 as f32,
+            b0 as f32 / a0 as f32,
+        );
+        let mut mix = [0.0_f32; 10];
+        for i in 0..10 {
+            mix[i] = fastpow(spec_a[i], fac_a) * fastpow(spec_b[i], fac_b);
+        }
+        let (sr, sg, sb) = spectral_to_rgb(&mix);
+        p[3] = a_out as u16;
+        // C: `rgba[i] = (rgb_result[i] * rgba[3]) + 0.5;`
+        p[0] = (sr * a_out as f32 + 0.5) as u16;
+        p[1] = (sg * a_out as f32 + 0.5) as u16;
+        p[2] = (sb * a_out as f32 + 0.5) as u16;
+    }
+}
+
+/// `draw_dab_pixels_BlendMode_Normal_and_Eraser_Paint` — erase-aware
+/// spectral blend that fades from additive to WGM with
+/// `spectral_blend_factor(canvas alpha)`; no minimum opacity.
+fn blend_normal_and_eraser_paint(
+    tile: &mut TilePixels,
+    entries: &[(usize, usize, u32)],
+    src_r: u32,
+    src_g: u32,
+    src_b: u32,
+    color_a: u32,
+    opacity: u32,
+) {
+    use crate::spectral::{fastpow, rgb_to_spectral, spectral_blend_factor, spectral_to_rgb};
+    const ONE: u32 = FIX15_ONE;
+    let spec_a = rgb_to_spectral(
+        src_r as f32 / ONE as f32,
+        src_g as f32 / ONE as f32,
+        src_b as f32 / ONE as f32,
+    );
+    for &(lx, ly, mask) in entries {
+        let opa_a = mask * opacity / ONE;
+        let opa_b = ONE - opa_a;
+        let opa_a2 = opa_a * color_a / ONE;
+        let p = &mut tile[ly][lx];
+        let (r0, g0, b0, a0) = (p[0] as u32, p[1] as u32, p[2] as u32, p[3] as u32);
+        let opa_out = opa_a2 + opa_b * a0 / ONE;
+
+        let mut rgb = [0u32; 3];
+        let spectral_factor = spectral_blend_factor(a0 as f32 / ONE as f32).clamp(0.0, 1.0);
+        let additive_factor = 1.0 - spectral_factor;
+
+        if additive_factor != 0.0 {
+            rgb[0] = (opa_a2 * src_r + opa_b * r0) / ONE;
+            rgb[1] = (opa_a2 * src_g + opa_b * g0) / ONE;
+            rgb[2] = (opa_a2 * src_b + opa_b * b0) / ONE;
+        }
+
+        if spectral_factor != 0.0 && a0 != 0 {
+            let spec_b = rgb_to_spectral(
+                r0 as f32 / a0 as f32,
+                g0 as f32 / a0 as f32,
+                b0 as f32 / a0 as f32,
+            );
+            let mut fac_a = opa_a as f32 / (opa_a + opa_b * a0 / ONE) as f32;
+            fac_a *= color_a as f32 / ONE as f32;
+            let fac_b = 1.0 - fac_a;
+            let mut mix = [0.0_f32; 10];
+            for i in 0..10 {
+                mix[i] = fastpow(spec_a[i], fac_a) * fastpow(spec_b[i], fac_b);
+            }
+            let (sr, sg, sb) = spectral_to_rgb(&mix);
+            let res = [sr, sg, sb];
+            for i in 0..3 {
+                // uint32 ← float expression: truncation, like C.
+                rgb[i] = (additive_factor * rgb[i] as f32
+                    + spectral_factor * res[i] * opa_out as f32) as u32;
+            }
+        }
+
+        p[3] = opa_out as u16;
+        p[0] = rgb[0] as u16;
+        p[1] = rgb[1] as u16;
+        p[2] = rgb[2] as u16;
     }
 }
 

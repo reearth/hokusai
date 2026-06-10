@@ -129,11 +129,13 @@ fn colorize_replaces_hue_keeps_value() {
     let g = fix15::to_f32(p[1]) / a;
     let b = fix15::to_f32(p[2]) / a;
 
-    // V of the result should still ~match the original grey's V (0.5).
-    let v = r.max(g).max(b);
+    // libmypaint's Color blend is the Adobe "Color" non-separable mode:
+    // it preserves the destination's BT.601 *luminance* (not HSV value)
+    // while taking the source hue/chroma.
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     assert!(
-        (v - 0.5).abs() < 0.05,
-        "value should be preserved, got v={v}"
+        (lum - 0.5).abs() < 0.05,
+        "luminance should be preserved, got lum={lum} ({r},{g},{b})"
     );
     // R should dominate (we took red's hue).
     assert!(r > g && r > b, "red hue should win: ({r},{g},{b})");
