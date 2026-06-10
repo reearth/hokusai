@@ -280,10 +280,11 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                     }
                 }
                 if lock_alpha != 0.0 && color_a != 0.0 {
-                    let opacity = fix(
-                        lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize)
-                            * (1.0 - paint),
-                    );
+                    let opacity = fix(lock_alpha
+                        * opaque_f
+                        * (1.0 - colorize)
+                        * (1.0 - posterize)
+                        * (1.0 - paint));
                     blend_lock_alpha(tile, &mask_entries, src_r, src_g, src_b, opacity);
                 }
             }
@@ -305,9 +306,8 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                     }
                 }
                 if lock_alpha != 0.0 && color_a != 0.0 {
-                    let opacity = fix(
-                        lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize) * paint,
-                    );
+                    let opacity =
+                        fix(lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize) * paint);
                     blend_lock_alpha_paint(tile, &mask_entries, src_r, src_g, src_b, opacity);
                 }
             }
@@ -365,7 +365,9 @@ fn collect_dab_mask(
     for yp in y0..=y1 {
         for xp in x0..=x1 {
             let rr = if r_aa_start >= 0.0 {
-                rr_at_aa(xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2, r_aa_start)
+                rr_at_aa(
+                    xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2, r_aa_start,
+                )
             } else {
                 rr_at(xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2)
             };
@@ -522,7 +524,14 @@ fn blend_color(
             g = (ONE * p[1] as u32 / a) as u16;
             b = (ONE * p[2] as u32 / a) as u16;
         }
-        set_rgb16_lum_from_rgb16(src_r as u16, src_g as u16, src_b as u16, &mut r, &mut g, &mut b);
+        set_rgb16_lum_from_rgb16(
+            src_r as u16,
+            src_g as u16,
+            src_b as u16,
+            &mut r,
+            &mut g,
+            &mut b,
+        );
         // Re-premult.
         let r = r as u32 * a / ONE;
         let g = g as u32 * a / ONE;
