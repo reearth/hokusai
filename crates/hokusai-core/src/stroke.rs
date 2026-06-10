@@ -69,7 +69,7 @@ impl Brush {
         if state.skip_distance > 0.001 {
             let dx_skip = state.skip_last_x - x;
             let dy_skip = state.skip_last_y - y;
-            let dist = (dx_skip * dx_skip + dy_skip * dy_skip).sqrt();
+            let dist = dx_skip.hypot(dy_skip);
             state.skip_last_x = x;
             state.skip_last_y = y;
             state.skipped_dtime += dtime;
@@ -198,7 +198,6 @@ impl Brush {
             return false;
         }
 
-        let dt = dtime.max(0.0001) as f32;
 
         // --- Stroke input gating threshold ----------------------------------
         // libmypaint flips `STATE.STROKE_STARTED` based on pressure crossing
@@ -272,7 +271,9 @@ impl Brush {
         // (mypaint-brush.c:1391).
         let slow = self.get(BrushSetting::SlowTracking).base_value.max(0.0);
         let approach = if slow > 1e-3 {
-            1.0 - (-dt / (0.01 * slow)).exp()
+            // C: `1 - exp_decay(BASEVAL(SLOW_TRACKING), 100.0 * dtime)`
+            // — keep the same operation order for f32 bit-parity.
+            1.0 - (-((100.0 * dtime) as f32) / slow).exp()
         } else {
             1.0
         };
@@ -340,7 +341,10 @@ impl Brush {
         let mut cur_ax = state.actual_dab_x;
         let mut cur_ay = state.actual_dab_y;
         let mut cur_pressure = entry_pressure;
-        let mut dtime_left = dt;
+        // libmypaint keeps `dtime_left` as a DOUBLE and only narrows the
+        // per-step slice (`step_dtime = frac * dtime_left`) to float —
+        // mirror that so the time ledger rounds identically.
+        let mut dtime_left: f64 = dtime;
         let mut dabs_moved = state.dist_past_dab;
         let target_x = new_actual_x;
         let target_y = new_actual_y;
@@ -351,7 +355,8 @@ impl Brush {
         // STATE.ACTUAL_RADIUS / .ACTUAL_ELLIPTICAL_* / .DABS_PER_* — all
         // carried over from the previous event's last simulation step (or
         // zeroed by a reset, triggering the base-value fallbacks).
-        let mut dabs_todo = count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left);
+        let mut dabs_todo =
+            count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left as f32);
         let mut painted = false;
 
         // Simulation-step loop: while a full dab is due, advance + evaluate +
@@ -369,10 +374,10 @@ impl Brush {
                     1.0
                 };
                 dabs_moved = 0.0;
-                (
-                    step_ddab,
-                    (step_ddab / dabs_todo.max(1e-6)).clamp(0.0, 1.0),
-                )
+                // No clamp — the loop condition guarantees
+                // `step_ddab = 1 - dabs_moved <= dabs_todo`, like libmypaint's
+                // bare `frac = step_ddab / dabs_todo`.
+                (step_ddab, step_ddab / dabs_todo)
             } else {
                 (dabs_todo, 1.0)
             };
@@ -380,7 +385,7 @@ impl Brush {
             let step_dx = frac * (target_x - cur_x);
             let step_dy = frac * (target_y - cur_y);
             let step_dpressure = frac * (pressure - cur_pressure);
-            let step_dtime = frac * dtime_left;
+            let step_dtime = (frac as f64 * dtime_left) as f32;
             // libmypaint clamps degenerate step times at the top of
             // update_states_and_setting_values (mypaint-brush.c:616-622);
             // the *unclamped* value still drives the `dtime_left` ledger.
@@ -414,11 +419,11 @@ impl Brush {
             // Per-step velocity, libmypaint style (viewzoom = 1).
             let norm_dx = step_dx / step_dtime_c;
             let norm_dy = step_dy / step_dtime_c;
-            let norm_speed = (norm_dx * norm_dx + norm_dy * norm_dy).sqrt();
+            let norm_speed = norm_dx.hypot(norm_dy);
             let norm_dist = {
                 let ndx = step_dx / step_dtime_c / base_radius;
                 let ndy = step_dy / step_dtime_c / base_radius;
-                (ndx * ndx + ndy * ndy).sqrt() * step_dtime_c
+                ndx.hypot(ndy) * step_dtime_c
             };
 
             // Advance tilt state toward the event's target. libmypaint
@@ -476,7 +481,7 @@ impl Brush {
             // per-dab evaluation. With viewrotation = 0 the ascension
             // wraps into `(-180, 180]` exactly like libmypaint's
             // `mod_arith(... + 180, 360) - 180`.
-            let asc_wrapped = (state.ascension + 180.0).rem_euclid(360.0) - 180.0;
+            let asc_wrapped = mod_arith_c(state.ascension + 180.0, 360.0) - 180.0;
             dab_inputs.set(BrushInput::TiltDeclination, state.declination);
             dab_inputs.set(BrushInput::TiltAscension, asc_wrapped);
             dab_inputs.set(BrushInput::TiltDeclinationX, state.declination_x);
@@ -547,7 +552,7 @@ impl Brush {
             // sides with HOKUSAI_TRACE_INPUTS=1 and paste-diff the streams).
             if std::env::var("HOKUSAI_TRACE_INPUTS").is_ok() {
                 eprintln!(
-                    "press={:6.3}, speed1={:7.4}\tspeed2={:7.4}\tstroke={:6.3}\tcustom={:6.3}\tdir={:6.3}\tdec={:6.3}\tasc={:6.3}\trand={:6.3}",
+                    "press={:6.3}, speed1={:7.4}\tspeed2={:7.4}\tstroke={:6.3}\tcustom={:6.3}\tdir={:6.3}\tdec={:6.3}\tasc={:6.3}\trand={:6.3}\tattack={:6.3}",
                     dab_inputs.get(BrushInput::Pressure),
                     dab_inputs.get(BrushInput::Speed1),
                     dab_inputs.get(BrushInput::Speed2),
@@ -557,6 +562,7 @@ impl Brush {
                     dab_inputs.get(BrushInput::TiltDeclination),
                     dab_inputs.get(BrushInput::TiltAscension),
                     dab_inputs.get(BrushInput::Random),
+                    dab_inputs.get(BrushInput::AttackAngle),
                 );
             }
             let dab_radius = dab_sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
@@ -584,6 +590,12 @@ impl Brush {
             } else {
                 1.0
             };
+            if std::env::var("HOKUSAI_TRACE_SPEED").is_ok() {
+                eprintln!(
+                    "spd ns={:.6} fac1={:.8} slow={:.6} step_dt={:.8} frac={:.6} todo={:.6} drawing={}",
+                    norm_speed, fac1, state.norm_speed1_slow, step_dtime_c, frac, dabs_todo, drawing
+                );
+            }
             state.norm_speed1_slow += (norm_speed - state.norm_speed1_slow) * fac1;
             state.norm_speed2_slow += (norm_speed - state.norm_speed2_slow) * fac2;
 
@@ -595,7 +607,7 @@ impl Brush {
 
             let dir_filter_d = dab_sv.get(BrushSetting::DirectionFilter).max(0.0);
             let dir_time_const = (dir_filter_d * 0.5).exp() - 1.0;
-            let step_in_dabtime = (step_dx * step_dx + step_dy * step_dy).sqrt();
+            let step_in_dabtime = step_dx.hypot(step_dy);
             let dir_fac = if dir_time_const > 1e-3 {
                 1.0 - (-step_in_dabtime / dir_time_const).exp()
             } else {
@@ -657,7 +669,7 @@ impl Brush {
             // carried values must match libmypaint's.
             state.actual_elliptical_ratio = dab_sv.get(BrushSetting::EllipticalDabRatio);
             state.actual_elliptical_angle =
-                (dab_sv.get(BrushSetting::EllipticalDabAngle) + 180.0).rem_euclid(180.0) - 180.0;
+                mod_arith_c(dab_sv.get(BrushSetting::EllipticalDabAngle) + 180.0, 180.0) - 180.0;
 
             // Mirror of libmypaint's `settings_value[]`: keep the full
             // evaluation for the next step's delayed reads (DABS_PER_*,
@@ -710,22 +722,25 @@ impl Brush {
             // the consumption order aligned with `prepare_and_draw_dab`.
             // Same truthy gating as offset_by_random above.
             let mut dab_opaque_scale = 1.0_f32;
+            // The perturbed radius is a LOCAL in libmypaint
+            // (prepare_and_draw_dab's `float radius`) — it feeds the dab
+            // geometry and the smudge sample radius, but STATE.ACTUAL_RADIUS
+            // keeps the unperturbed `exp(SETTING(radius_log))`, so
+            // count_dabs_to stays stable across noisy dabs. hokusai used to
+            // write the noise back into the state, which made the dab
+            // spacing itself jitter and threw every downstream
+            // frac/step_dtime off the reference sequence.
+            let mut draw_radius = dab_radius;
             let rad_random_raw = dab_sv.get(BrushSetting::RadiusByRandom);
             let rad_random = rad_random_raw.max(0.0);
             if rad_random_raw != 0.0 {
                 let noise = state.rng.next_gauss() * rad_random;
                 let new_log = dab_sv.get(BrushSetting::Radius) + noise;
-                let new_radius = new_log.exp().clamp(0.2, 1000.0);
-                let alpha_correction = (dab_radius / new_radius).powi(2);
+                draw_radius = new_log.exp().clamp(0.2, 1000.0);
+                let alpha_correction = (dab_radius / draw_radius).powi(2);
                 if alpha_correction <= 1.0 {
                     dab_opaque_scale = alpha_correction;
                 }
-                // libmypaint stores the perturbed radius back into
-                // STATE.ACTUAL_RADIUS so the next `count_dabs_to` call sees
-                // it. `build_dab` reads from `state.actual_radius` for the
-                // dab geometry, so updating it here is what feeds the new
-                // size through to the renderer.
-                state.actual_radius = new_radius;
             }
             let off_speed = dab_sv.get(BrushSetting::OffsetBySpeed);
             if off_speed != 0.0 {
@@ -775,7 +790,7 @@ impl Brush {
                     // brushes whose noise meaningfully shifts the radius
                     // the smudge sample needs to scale with it.
                     let smudge_radius =
-                        (state.actual_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
+                        (draw_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
                     // libmypaint's `update_smudge_color` passes
                     // `legacy_smudge ? -1.0 : paint_factor` to
                     // `surface2_get_color`. paint_mode > 0 triggers
@@ -849,7 +864,16 @@ impl Brush {
             // → HSV/HSL dynamics, in that order. We do the same in
             // `build_dab` now (it took `&mut state` for `state.actual_*`
             // bookkeeping) — no separate per-dab drift pass.
-            let dab = build_dab(self, &dab_sv, state, px, py, smudge_amt, dab_opaque_scale);
+            let dab = build_dab(
+                self,
+                &dab_sv,
+                state,
+                px,
+                py,
+                draw_radius,
+                smudge_amt,
+                dab_opaque_scale,
+            );
             if !skip_dab && surface.draw_dab(&dab) {
                 painted = true;
             }
@@ -859,11 +883,12 @@ impl Brush {
             // drawing.
             state.random_input = state.rng.next_unit();
 
-            dtime_left = (dtime_left - step_dtime).max(0.0);
+            dtime_left -= step_dtime as f64;
             // Recount against the freshly advanced state — STATE.ACTUAL_RADIUS
             // (possibly radius_by_random-perturbed), this dab's elliptical
             // aspect/angle, and the one-step-delayed DABS_PER_* values.
-            dabs_todo = count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left);
+            dabs_todo =
+                count_dabs_to(self, state, cur_x, cur_y, target_x, target_y, dtime_left as f32);
         }
 
         // `dabs_moved` survives the final no-draw step untouched, so the
@@ -948,12 +973,17 @@ fn opaque_multiplier(brush: &Brush, sv: &SettingValues) -> f32 {
     sv.get(BrushSetting::OpaqueMultiply).clamp(0.0, 1.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_dab(
     brush: &Brush,
     sv: &SettingValues,
     state: &mut BrushState,
     px: f32,
     py: f32,
+    // The (possibly radius_by_random-perturbed) dab radius — a LOCAL in
+    // libmypaint's prepare_and_draw_dab, deliberately not read from
+    // STATE.ACTUAL_RADIUS.
+    radius: f32,
     smudge_amt: f32,
     // Per-dab opacity scaler from `radius_by_random`: when the noise
     // produced a larger radius, libmypaint scales `opaque` by
@@ -1098,7 +1128,7 @@ fn build_dab(
     }
 
     let mut hardness = sv.get(BrushSetting::Hardness).clamp(0.0, 1.0);
-    let mut radius = state.actual_radius;
+    let mut radius = radius;
 
     // libmypaint's anti_aliasing: if the current edge fadeout (in pixels)
     // is narrower than the requested minimum, soften the brush by lowering
@@ -1218,14 +1248,14 @@ fn count_dabs_to(
     let dx = tgt_x - cur_x;
     let dy = tgt_y - cur_y;
     let dist = if state.actual_elliptical_ratio > 1.0 {
-        let angle_rad = state.actual_elliptical_angle.to_radians();
+        let angle_rad = radians_c(state.actual_elliptical_angle);
         let cs = angle_rad.cos();
         let sn = angle_rad.sin();
         let yyr = (dy * cs - dx * sn) * state.actual_elliptical_ratio;
         let xxr = dy * sn + dx * cs;
         (yyr * yyr + xxr * xxr).sqrt()
     } else {
-        (dx * dx + dy * dy).sqrt()
+        dx.hypot(dy)
     };
 
     let dpar_state = state.dabs_per_actual_radius;
@@ -1279,92 +1309,131 @@ fn directional_offsets(
     let mut dy = sv.get(BrushSetting::OffsetY);
 
     let offset_angle_adj = sv.get(BrushSetting::OffsetAngleAdj);
-    let stroke_angle_deg = direction_angle_dy.atan2(direction_angle_dx).to_degrees() - 90.0;
-    let stroke_angle_deg = stroke_angle_deg.rem_euclid(360.0);
+    // C: `fmodf(DEGREES(atan2f(dy, dx)) - 90, 360)` — fmod keeps the sign
+    // (cos/sin only differ in rounding, not value, vs a euclidean mod) and
+    // the degree conversion runs in double. Each branch below then narrows
+    // RADIANS(...) to f32 and feeds it through the DOUBLE libm cos/sin —
+    // exactly the C precision mix, which matters because these offsets get
+    // multiplied by `base_radius * exp(offset_multiplier)` (often tens of
+    // pixels) before landing on the canvas.
+    let angle_deg =
+        ((degrees_c(direction_angle_dy.atan2(direction_angle_dx)) - 90.0) as f32) % 360.0;
     let viewrotation = 0.0_f32;
+
+    #[inline]
+    fn add_polar(dx: &mut f32, dy: &mut f32, angle: f32, factor: f32) {
+        let a = angle as f64;
+        *dx = (*dx as f64 + a.cos() * factor as f64) as f32;
+        *dy = (*dy as f64 + a.sin() * factor as f64) as f32;
+    }
 
     let offset_angle = sv.get(BrushSetting::OffsetAngle);
     if offset_angle != 0.0 {
-        let a = (stroke_angle_deg + offset_angle_adj).to_radians();
-        dx += a.cos() * offset_angle;
-        dy += a.sin() * offset_angle;
+        let a = radians_c(angle_deg + offset_angle_adj);
+        add_polar(&mut dx, &mut dy, a, offset_angle);
     }
 
     let offset_angle_asc = sv.get(BrushSetting::OffsetAngleAsc);
     if offset_angle_asc != 0.0 {
-        let a = (ascension_deg - viewrotation + offset_angle_adj).to_radians();
-        dx += a.cos() * offset_angle_asc;
-        dy += a.sin() * offset_angle_asc;
+        let a = radians_c(ascension_deg - viewrotation + offset_angle_adj);
+        add_polar(&mut dx, &mut dy, a, offset_angle_asc);
     }
 
     let view_offset = sv.get(BrushSetting::OffsetAngleView);
     if view_offset != 0.0 {
-        let a = (viewrotation + offset_angle_adj).to_radians();
-        dx += (-a).cos() * view_offset;
-        dy += (-a).sin() * view_offset;
+        let a = radians_c(viewrotation + offset_angle_adj);
+        add_polar(&mut dx, &mut dy, -a, view_offset);
     }
 
     let offset_dir_mirror = sv.get(BrushSetting::OffsetAngle2).max(0.0);
     if offset_dir_mirror != 0.0 {
-        let a = (stroke_angle_deg + offset_angle_adj * flip).to_radians();
-        let factor = offset_dir_mirror * flip;
-        dx += a.cos() * factor;
-        dy += a.sin() * factor;
+        let a = radians_c(angle_deg + offset_angle_adj * flip);
+        add_polar(&mut dx, &mut dy, a, offset_dir_mirror * flip);
     }
 
     let offset_asc_mirror = sv.get(BrushSetting::OffsetAngle2Asc).max(0.0);
     if offset_asc_mirror != 0.0 {
-        let a = (ascension_deg - viewrotation + offset_angle_adj * flip).to_radians();
-        let factor = offset_asc_mirror * flip;
-        dx += a.cos() * factor;
-        dy += a.sin() * factor;
+        let a = radians_c(ascension_deg - viewrotation + offset_angle_adj * flip);
+        add_polar(&mut dx, &mut dy, a, flip * offset_asc_mirror);
     }
 
     let offset_view_mirror = sv.get(BrushSetting::OffsetAngle2View).max(0.0);
     if offset_view_mirror != 0.0 {
-        let a = (viewrotation + offset_angle_adj).to_radians();
-        let factor = offset_view_mirror * flip;
-        dx += (-a).cos() * factor;
-        dy += (-a).sin() * factor;
+        let a = radians_c(viewrotation + offset_angle_adj);
+        add_polar(&mut dx, &mut dy, -a, flip * offset_view_mirror);
     }
 
     const LIM: f32 = 3240.0;
-    let scale = base_radius * offset_mult;
-    ((dx * scale).clamp(-LIM, LIM), (dy * scale).clamp(-LIM, LIM))
+    let base_mul = base_radius * offset_mult;
+    ((dx * base_mul).clamp(-LIM, LIM), (dy * base_mul).clamp(-LIM, LIM))
 }
 
-/// Smallest signed angular difference `b - a` (in degrees), wrapped to
-/// `(-180, 180]`. Used to advance `STATE.ASCENSION` / `BARREL_ROTATION`
-/// toward their event targets without taking the long way around the
-/// circle on wrap-overs.
+/// C `DEGREES(x)` — `((x) / (2*M_PI)) * 360.0` — evaluated in DOUBLE.
+/// Callers narrow back to f32 at their own assignment points, exactly
+/// like the C expression contexts.
+#[inline]
+fn degrees_c(x: f32) -> f64 {
+    x as f64 / (2.0 * std::f64::consts::PI) * 360.0
+}
+
+/// C `RADIANS(x)` — `((x) * M_PI / 180.0)` in double, narrowed to f32 at
+/// the assignment site like every C caller does.
+#[inline]
+fn radians_c(x: f32) -> f32 {
+    (x as f64 * std::f64::consts::PI / 180.0) as f32
+}
+
+/// C `mod_arith(a, N)` (helpers.c:75): `a - N * floor(a / N)` — the
+/// division happens in f32, `floor` promotes to double, and the final
+/// multiply/subtract round once at the f32 narrowing. NOT the same
+/// rounding as `f32::rem_euclid` (which is fmod-based).
+#[inline]
+fn mod_arith_c(a: f32, n: f32) -> f32 {
+    (a as f64 - n as f64 * (a / n).floor() as f64) as f32
+}
+
+/// Smallest signed angular difference `b - a` (in degrees) — port of
+/// helpers.c `smallest_angular_difference`, including its post-wrap
+/// correction branch.
 fn smallest_angular_diff(a: f32, b: f32) -> f32 {
-    let mut d = b - a;
-    d = (d + 180.0).rem_euclid(360.0) - 180.0;
-    d
+    let d = b - a;
+    let mut r = mod_arith_c(d + 180.0, 360.0) - 180.0;
+    r += if r > 180.0 {
+        -360.0
+    } else if r < -180.0 {
+        360.0
+    } else {
+        0.0
+    };
+    r
 }
 
 /// libmypaint's `INPUT(ATTACK_ANGLE)`: the smallest angular difference
 /// between the pen's ascension direction and the stroke direction (offset
 /// by 90°), both in degrees, wrapped to `(-180, 180]`.
 fn attack_angle(ascension_deg: f32, dx_raw: f32, dy_raw: f32) -> f32 {
-    if dx_raw == 0.0 && dy_raw == 0.0 {
-        return 0.0;
-    }
-    let direction_deg = dy_raw.atan2(dx_raw).to_degrees();
-    // `mod_arith(DEGREES(dir) + 90, 360)` in libmypaint.
-    let target = ((direction_deg + 90.0).rem_euclid(360.0) + 360.0).rem_euclid(360.0);
-    // Smallest signed angular difference.
-    let mut d = ascension_deg - target;
-    d = (d + 180.0).rem_euclid(360.0) - 180.0;
-    d
+    // libmypaint: `smallest_angular_difference(STATE(ASCENSION),
+    // mod_arith(DEGREES(dir_angle_360) + 90, 360))` — the signed angle
+    // FROM the pen ascension TO (stroke direction + 90°). No
+    // zero-direction special case: C's `atan2f(0, 0)` is 0, so a fresh
+    // stroke starts at +90.
+    let target = mod_arith_c((degrees_c(dy_raw.atan2(dx_raw)) + 90.0) as f32, 360.0);
+    smallest_angular_diff(ascension_deg, target)
 }
 
 fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
+    // Bit-for-bit port of libmypaint's mapping
+    // (settings_base_values_have_changed + the INPUT(SPEED*) line):
+    // `gamma` and `m` are f32, but both `log` calls are the DOUBLE
+    // precision libm `log` of an f32 sum, and the final expression is
+    // evaluated in double before narrowing. The precision mix matters —
+    // speed feeds curves whose outputs scale base_radius-sized offsets,
+    // so a 1-ulp drift here visibly displaces scatter-brush dabs.
     let gamma = gamma_log.exp();
-    let fix1 = 45.0_f32;
-    let m = 0.015 * (fix1 + gamma);
-    let q = 0.5 - m * (fix1 + gamma).ln();
-    (gamma + speed_norm.max(0.0)).ln() * m + q
+    let m = 0.015_f32 * (45.0 + gamma);
+    let c1 = (((45.0_f32 + gamma) as f64).ln()) as f32;
+    let q = 0.5_f32 - m * c1;
+    (((gamma + speed_norm) as f64).ln() * m as f64 + q as f64) as f32
 }
 
 /// libmypaint's `INPUT(DIRECTION)` — 180°-folded direction in *degrees*.
@@ -1373,22 +1442,17 @@ fn speed_input(speed_norm: f32, gamma_log: f32) -> f32 {
 /// `hard_minimum=0, hard_maximum=180` in libmypaint's
 /// `brushsettings.json`.
 fn direction_input(dx: f32, dy: f32) -> f32 {
-    if dx == 0.0 && dy == 0.0 {
-        0.0
-    } else {
-        (dy.atan2(dx).to_degrees() + 180.0).rem_euclid(180.0)
-    }
+    mod_arith_c((degrees_c(dy.atan2(dx)) + 180.0) as f32, 180.0)
 }
 
 /// libmypaint's `INPUT(DIRECTION_ANGLE)` — full 360° direction in *degrees*.
 /// `fmodf(degrees(atan2(dy, dx)) + viewrotation + 360, 360)` with
 /// `viewrotation = 0`. Output range `[0, 360)`.
 fn direction_angle(dx: f32, dy: f32) -> f32 {
-    if dx == 0.0 && dy == 0.0 {
-        0.0
-    } else {
-        (dy.atan2(dx).to_degrees() + 360.0).rem_euclid(360.0)
-    }
+    // C: `fmodf(DEGREES(dir_angle_360) + viewrotation + 360.0, 360.0)` —
+    // fmod, not euclidean mod (atan2 output + 360 is never negative
+    // anyway).
+    ((degrees_c(dy.atan2(dx)) + 360.0) as f32) % 360.0
 }
 
 #[cfg(test)]

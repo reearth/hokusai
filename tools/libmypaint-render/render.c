@@ -81,8 +81,8 @@ static int trace_draw_dab_2(
 {
     trace_dab_count++;
     fprintf(stderr,
-        "  lmp#%d: (%6.2f,%6.2f) r=%5.2f hard=%4.2f opaq=%4.2f aspect=%4.2f ang=%6.1f paint=%4.2f\n",
-        trace_dab_count, x, y, radius, hardness, opaque, aspect_ratio, angle, paint);
+        "  lmp#%d: (%9.4f,%9.4f) r=%8.5f hard=%7.5f opaq=%7.5f aspect=%7.4f ang=%8.3f paint=%4.2f rgb=(%8.5f,%8.5f,%8.5f) er=%7.5f\n",
+        trace_dab_count, x, y, radius, hardness, opaque, aspect_ratio, angle, paint, r, g, b, alpha_eraser);
     return orig_draw_dab_2(self, x, y, radius, r, g, b, opaque, hardness,
                           alpha_eraser, aspect_ratio, angle, lock_alpha, colorize,
                           posterize, posterize_num, paint);
