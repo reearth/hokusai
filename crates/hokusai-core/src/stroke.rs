@@ -589,12 +589,6 @@ impl Brush {
             } else {
                 1.0
             };
-            if std::env::var("HOKUSAI_TRACE_SPEED").is_ok() {
-                eprintln!(
-                    "spd ns={:.6} fac1={:.8} slow={:.6} step_dt={:.8} frac={:.6} todo={:.6} drawing={}",
-                    norm_speed, fac1, state.norm_speed1_slow, step_dtime_c, frac, dabs_todo, drawing
-                );
-            }
             state.norm_speed1_slow += (norm_speed - state.norm_speed1_slow) * fac1;
             state.norm_speed2_slow += (norm_speed - state.norm_speed2_slow) * fac2;
 
