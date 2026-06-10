@@ -812,12 +812,18 @@ impl Brush {
                     if (smudge_op_lim > 0.0 && sample.a < smudge_op_lim)
                         || (smudge_op_lim < 0.0 && sample.a > -smudge_op_lim)
                     {
+                        // libmypaint RETURNS here (update_smudge_color
+                        // "return TRUE"), before the prev_col_* cache is
+                        // refreshed and before the bucket mix — the gated
+                        // sample must NOT leak into either. (recentness
+                        // was already reset to 1.0 above, like upstream.)
                         skip_dab = true;
+                    } else {
+                        state.prev_col_r = sample.r;
+                        state.prev_col_g = sample.g;
+                        state.prev_col_b = sample.b;
+                        state.prev_col_a = sample.a;
                     }
-                    state.prev_col_r = sample.r;
-                    state.prev_col_g = sample.g;
-                    state.prev_col_b = sample.b;
-                    state.prev_col_a = sample.a;
                     (sample.r, sample.g, sample.b, sample.a)
                 } else {
                     (

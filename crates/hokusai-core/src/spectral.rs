@@ -192,12 +192,14 @@ pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 
         let spec_b = rgb_to_spectral(b[0], b[1], b[2]);
         let mut mix = [0.0_f32; 10];
         for i in 0..10 {
-            // libmypaint uses `fastpow` here (mypaint/brushmodes.c:393,
-            // 475 and helpers.c:587) — its ~2 % relative error is what
-            // its spectral mix output is calibrated against, so matching
-            // the same approximation keeps hokusai's mix arithmetic
-            // numerically aligned.
-            mix[i] = fastpow(spec_a[i].max(1e-6), sfac_a) * fastpow(spec_b[i].max(1e-6), sfac_b);
+            // helpers.c `mix_colors` deliberately uses the REAL powf
+            // ("called infrequently enough that we can afford to not use
+            // the faster approximations") — unlike the per-pixel blend
+            // loops in brushmodes.c, which do use fastpow. Running fastpow
+            // here shifted every smudge-bucket mix by its ~2 % error, and
+            // the bucket → dab colour → canvas → resample feedback loop
+            // amplified that into a visible colour drift (Round#1).
+            mix[i] = spec_a[i].powf(sfac_a) * spec_b[i].powf(sfac_b);
         }
         let (r, g, b_) = spectral_to_rgb(&mix);
         result[0] = r;

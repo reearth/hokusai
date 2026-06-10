@@ -59,6 +59,9 @@ impl std::error::Error for RenderError {}
 /// `image::RgbaImage::save_png` would emit. Tile traversal and flattening
 /// are deterministic.
 pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
+    // Each reference render is a fresh libmypaint process, so its libc
+    // rand() (consumed by sparse get_color sampling) starts from seed 1.
+    hokusai_core::brushmodes::reset_get_color_rng();
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
     // Symmetric warm-up: the libmypaint C wrapper precedes the script with
@@ -103,6 +106,7 @@ pub fn render(brush: &Brush, script: &Script) -> Vec<u8> {
 /// every stroke ends with a `slow_tracking * speed`-sized unpainted tail
 /// (which is shared with libmypaint, just normally hidden by app code).
 pub fn render_with_finish(brush: &Brush, script: &Script) -> Vec<u8> {
+    hokusai_core::brushmodes::reset_get_color_rng();
     let mut state = BrushState::default();
     let mut surface = MemSurface::new();
     if let Some(first) = script.events.first() {
