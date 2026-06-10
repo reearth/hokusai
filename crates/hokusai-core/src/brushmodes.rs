@@ -517,13 +517,11 @@ fn blend_color(
     for &(lx, ly, mask) in entries {
         let p = &mut tile[ly][lx];
         let a = p[3] as u32;
-        // De-premult (C leaves r=g=b=0 when alpha is 0).
-        let (mut r, mut g, mut b) = (0u16, 0u16, 0u16);
-        if a != 0 {
-            r = (ONE * p[0] as u32 / a) as u16;
-            g = (ONE * p[1] as u32 / a) as u16;
-            b = (ONE * p[2] as u32 / a) as u16;
-        }
+        // De-premult — `checked_div` matches C's "leave r=g=b=0 when
+        // alpha is 0" fallback exactly.
+        let mut r = (ONE * p[0] as u32).checked_div(a).unwrap_or(0) as u16;
+        let mut g = (ONE * p[1] as u32).checked_div(a).unwrap_or(0) as u16;
+        let mut b = (ONE * p[2] as u32).checked_div(a).unwrap_or(0) as u16;
         set_rgb16_lum_from_rgb16(
             src_r as u16,
             src_g as u16,
