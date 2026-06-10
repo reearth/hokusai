@@ -89,6 +89,28 @@ pub struct BrushState {
     /// `stroke_state` to 0 so the `Stroke` input starts a fresh ramp.
     pub stroke_started: bool,
 
+    /// libmypaint's `STATE.DABS_PER_ACTUAL_RADIUS` / `_BASIC_RADIUS` /
+    /// `_SECOND` — committed from the *previous* evaluation's SETTING values
+    /// at the start of each simulation step (mypaint-brush.c:628-630), so
+    /// `count_dabs_to` reads a one-step-delayed value. 0 after a reset,
+    /// which triggers the base-value fallback in `state_based_dab_count`.
+    pub dabs_per_actual_radius: f32,
+    pub dabs_per_basic_radius: f32,
+    pub dabs_per_second: f32,
+    /// libmypaint's `STATE.ACTUAL_ELLIPTICAL_DAB_RATIO` / `_ANGLE` — set
+    /// from the freshly evaluated SETTING at the end of each simulation
+    /// step. `count_dabs_to` reads these (NOT the per-event evaluation),
+    /// so the first count after a reset sees ratio 0 → plain euclidean
+    /// distance.
+    pub actual_elliptical_ratio: f32,
+    pub actual_elliptical_angle: f32,
+    /// Mirror of libmypaint's `settings_value[]` — the full output of the
+    /// most recent per-dab setting evaluation. A handful of state commits
+    /// read the *previous* evaluation (`STATE.DABS_PER_*`, the gridmap
+    /// scale states), and `brush_reset` deliberately does NOT clear this
+    /// (it lives outside `states[]`).
+    pub prev_settings: crate::evaluator::SettingValues,
+
     // Distance accumulated since last dab (so dab count is fractional-stable).
     pub dist_past_dab: f32,
     pub last_dab_x: f32,
@@ -179,6 +201,12 @@ impl BrushState {
             stroke_current_idling_time: 0.0,
             stroke_state: 0.0,
             stroke_started: false,
+            dabs_per_actual_radius: 0.0,
+            dabs_per_basic_radius: 0.0,
+            dabs_per_second: 0.0,
+            actual_elliptical_ratio: 0.0,
+            actual_elliptical_angle: 0.0,
+            prev_settings: crate::evaluator::SettingValues::new(),
             dist_past_dab: 0.0,
             last_dab_x: 0.0,
             last_dab_y: 0.0,

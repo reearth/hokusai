@@ -177,6 +177,15 @@ int main(int argc, char **argv) {
         surface2->draw_dab_pigment = trace_draw_dab_2;
     }
 
+    // Optionally print the per-step brush inputs (pressure, speed, direction,
+    // declination, …) via libmypaint's own debug hook. Set
+    // HOKUSAI_TRACE_INPUTS=1; lines go to stdout (mixed with the image — pipe
+    // through `grep press=` when tracing). Mirrors hokusai's env var of the
+    // same name.
+    if (getenv("HOKUSAI_TRACE_INPUTS")) {
+        mypaint_brush_set_print_inputs(brush, TRUE);
+    }
+
     // Warm-up: libmypaint's first stroke_to applies slow_tracking smoothing
     // BEFORE detecting the reset_requested flag, so for brushes with heavy
     // `slow_tracking` the seeded STATE.X bleeds toward the default 0, and
